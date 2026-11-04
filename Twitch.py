@@ -163,13 +163,13 @@ async def tfollow(interaction: discord.Interaction, twitch_ismi: str):
     fail = 0
     error_message = ""
 
+    # DÜZELTİLEN KISIM: disableNotifications: false eklendi
     follow_mutation = {
-        "query": "mutation($targetId: ID!) { followUser(input: { targetID: $targetId }) { follow { user { id } } } }",
+        "query": "mutation($targetId: ID!) { followUser(input: { targetID: $targetId, disableNotifications: false }) { follow { user { id } } } }",
         "variables": {"targetId": target_id}
     }
 
     for token in current_tokens:
-        # Tarayıcı taklidi (Twitch botları bu header'lar olmadan reddediyor)
         t_headers = {
             "Client-ID": TWITCH_CLIENT_ID,
             "Authorization": f"OAuth {token}",
@@ -191,7 +191,7 @@ async def tfollow(interaction: discord.Interaction, twitch_ismi: str):
                 else:
                     fail += 1
                     error_message = f"HTTP {resp.status} - Yetkisiz İstek"
-        await asyncio.sleep(1.2) # Rate limit yememek için
+        await asyncio.sleep(1.2)
 
     msg = f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n\n✔️ Başarılı Takip: **{success}**\n❌ Başarısız Token: **{fail}**"
     if fail > 0 and error_message:
