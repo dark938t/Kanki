@@ -1,4 +1,4 @@
-# language: Python 3.11, file: tfollow.py
+# language: Python 3.11, file: Twitch.py
 import discord
 from discord.ext import commands
 import aiohttp
@@ -58,12 +58,12 @@ async def add_tokens_safely(new_tokens):
         return await write_github_tokens(tokens, sha)
 # =========================================================
 
-# ==================== ABİNİN KODU (TwitchFollower Sınıfı) ====================
+# ==================== TWITCH FOLLOWER SINIFI (Asenkron Uyarlanmış) ====================
 class TwitchFollower:
     def __init__(self, log_callback=print):
         self.log_callback = log_callback
         self.followed_records = {}
-        self.lock = threading.Lock()
+        self.lock = asyncio.Lock()
         self.running = False
         self.proxies = self._load_proxies()
 
@@ -82,98 +82,62 @@ class TwitchFollower:
                         proxies.append(line)
         return proxies
 
-    def get_user_id(self, user):
+    async def get_user_id(self, user):
         headers = {
             "Client-Id": "kimne78kx3ncx6brgo4mv6wki5h1ko",
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         }
-
         payload = json.dumps([{
             "operationName": "GetIDFromLogin",
             "variables": {"login": user},
-            "extensions": {
-                "persistedQuery": {
-                    "version": 1,
-                    "sha256Hash": "94e82a7b1e3c21e186daa73ee2afc4b8f23bade1fbbff6fe8ac133f50a2f58ca"
-                }
-            }
+            "extensions": {"persistedQuery": {"version": 1, "sha256Hash": "94e82a7b1e3c21e186daa73ee2afc4b8f23bade1fbbff6fe8ac133f50a2f58ca"}}
         }])
-
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            id_result = loop.run_until_complete(self._fetch_user_id_async(user, headers, payload))
-            loop.close()
-            return id_result
-        except Exception as e:
-            self._log(f"Error getting user ID for {user}: {e}")
-            return False
-
-    async def _fetch_user_id_async(self, user, headers, payload):
-        try:
-            proxy_url = None
-            if self.proxies:
-                proxy_url = random.choice(self.proxies)
-                self._log(f"Using proxy for user ID lookup: {proxy_url}")
-
             connector = aiohttp.TCPConnector(ssl=False)
-            timeout = aiohttp.ClientTimeout(total=30)
-            
+            timeout = aiohttp.ClientTimeout(total=15)
             async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                async with session.post("https://gql.twitch.tv/gql", headers=headers, data=payload, proxy=proxy_url) as response:
+                async with session.post("https://gql.twitch.tv/gql", headers=headers, data=payload) as response:
                     if response.status == 200:
                         data = await response.json()
-                        return data[0]["data"]["user"]["id"]
+                        if data and isinstance(data, list) and data[0].get("data") and data[0]["data"].get("user"):
+                            return data[0]["data"]["user"]["id"]
         except Exception as e:
-            self._log(f"Network error getting ID for {user}: {e}")
+            self._log(f"ID Hatası: {e}")
         return False
 
     async def _execute_follow_request(self, target_id, token, target_username):
         try:
             headers = {
                 "Accept": "application/json",
-                "Accept-Language": "en-US",
                 "Authorization": f"OAuth {token}",
                 "Content-Type": "application/json",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
-
             payload = json.dumps([{
                 "operationName": "FollowUserMutation",
-                "variables": {
-                    "targetId": str(target_id),
-                    "disableNotifications": False
-                },
-                "extensions": {
-                    "persistedQuery": {
-                        "version": 1,
-                        "sha256Hash": "cd112d9483ede85fa0da514a5657141c24396efbc7bac0ea3623e839206573b8"
-                    }
-                }
+                "variables": {"targetId": str(target_id), "disableNotifications": False},
+                "extensions": {"persistedQuery": {"version": 1, "sha256Hash": "cd112d9483ede85fa0da514a5657141c24396efbc7bac0ea3623e839206573b8"}}
             }])
 
-            proxy_url = None
-            if self.proxies:
-                proxy_url = random.choice(self.proxies)
+            proxy_url = random.choice(self.proxies) if self.proxies else None
 
             connector = aiohttp.TCPConnector(ssl=False)
-            timeout = aiohttp.ClientTimeout(total=30)
+            timeout = aiohttp.ClientTimeout(total=15)
             
             async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
                 async with session.post("https://gql.twitch.tv/gql", data=payload, headers=headers, proxy=proxy_url) as response:
                     result_text = await response.text()
-                    if response.status in (200, 204):
-                        if "errors" not in result_text.lower():
-                            return True
+                    if response.status in (200, 204) and "errors" not in result_text.lower():
+                        return True
                     return False
-        except Exception as e:
+        except Exception:
             return False
 
     async def _follow_worker(self, target_id, tokens_list, target_username, max_follows, stats):
         while self.running and stats["completed"] < max_follows:
             available_token = None
-            with self.lock:
+            async with self.lock:
                 unused_tokens = [t for t in tokens_list if t not in self.followed_records or target_id not in self.followed_records[t]]
                 if unused_tokens:
                     available_token = random.choice(unused_tokens)
@@ -187,44 +151,27 @@ class TwitchFollower:
             success = await self._execute_follow_request(target_id, available_token, target_username)
             
             if success:
-                with self.lock:
+                async with self.lock:
                     stats["completed"] += 1
                     if available_token not in self.followed_records:
                         self.followed_records[available_token] = []
                     self.followed_records[available_token].append(target_id)
             
-            await asyncio.sleep(random.uniform(0.1, 0.2))
+            await asyncio.sleep(random.uniform(0.1, 0.3))
 
-    def execute_follows(self, target_id, follow_count, tokens_data, target_username):
-        completion_event = threading.Event()
+    async def execute_follows_async(self, target_id, follow_count, tokens_data, target_username):
+        self.running = True
+        stats = {"completed": 0}
+        tasks = []
+        num_workers = min(50, follow_count, len(tokens_data))
         
-        def run_async_loop():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            async def main_async():
-                stats = {"completed": 0, "active_workers": 0}
-                tasks = []
-                num_workers = min(100, follow_count, len(tokens_data))
-                
-                for _ in range(num_workers):
-                    task = asyncio.create_task(self._follow_worker(target_id, tokens_data, target_username, follow_count, stats))
-                    tasks.append(task)
-                    stats["active_workers"] += 1
-                    await asyncio.sleep(0.01)
-                
-                await asyncio.gather(*tasks, return_exceptions=True)
-                completion_event.set()
-            
-            try:
-                loop.run_until_complete(main_async())
-            except Exception as e:
-                pass
-            finally:
-                loop.close()
+        for _ in range(num_workers):
+            tasks.append(asyncio.create_task(self._follow_worker(target_id, tokens_data, target_username, follow_count, stats)))
+            await asyncio.sleep(0.01)
         
-        threading.Thread(target=run_async_loop, daemon=True).start()
-        return completion_event
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.running = False
+        return stats["completed"]
 # =========================================================================
 
 # ==================== WEB PANELİ ====================
@@ -287,32 +234,19 @@ async def tfollow(interaction: discord.Interaction, twitch_ismi: str, adet: int 
     if not current_tokens:
         return await interaction.followup.send("❌ Panelden hiç Twitch token'ı eklenmemiş!")
 
-    # Abinin sınıfını başlat
     follower = TwitchFollower()
     
-    # Hedefin ID'sini al
-    target_id = follower.get_user_id(twitch_ismi)
+    # Kanal ID'sini bekle (await kullanıldı)
+    target_id = await follower.get_user_id(twitch_ismi)
     if not target_id:
         return await interaction.followup.send(f"❌ **{twitch_ismi}** adında bir Twitch kanalı bulunamadı.")
 
-    # İşlemi başlat
-    follower.running = True
-    completion_event = follower.execute_follows(target_id, adet, current_tokens, twitch_ismi)
+    msg = await interaction.followup.send(f"⏳ **{twitch_ismi}** için {adet} takipçi gönderiliyor...")
 
-    # Discord'un zaman aşımına uğramaması için bekleme mesajı at
-    msg = await interaction.followup.send(f"⏳ **{twitch_ismi}** için {adet} takipçi gönderiliyor... (Proxiesiz çalışıyorsa yavaş olabilir)")
-
-    # Thread bittiğinde Discord'u güncelle
-    def wait_for_completion():
-        completion_event.wait()
-        follower.running = False
-        # Asenkron Discord mesajını güncellemek için botun event loop'una gönder
-        asyncio.run_coroutine_threadsafe(
-            msg.edit(content=f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n📊 Gönderilen: **{adet}**"),
-            bot.loop
-        )
-
-    threading.Thread(target=wait_for_completion, daemon=True).start()
+    # Arka planda takip işlemini başlat
+    completed = await follower.execute_follows_async(target_id, adet, current_tokens, twitch_ismi)
+    
+    await msg.edit(content=f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n📊 Başarılı Takip: **{completed}**")
 
 if __name__ == "__main__":
     if not TOKEN or not GITHUB_TOKEN or not GITHUB_REPO:
