@@ -52,10 +52,10 @@ async def add_tokens_safely(new_tokens):
     async with github_lock:
         for _ in range(3):
             tokens, sha = await read_github_tokens()
-            # Sadece olmayanları ekle (tekrarları önle)
             for t in new_tokens:
-                if t not in tokens:
-                    tokens.append(t)
+                clean_t = t.strip()
+                if clean_t and clean_t not in tokens:
+                    tokens.append(clean_t)
             if await write_github_tokens(tokens, sha): return True
             await asyncio.sleep(1)
         return False
@@ -103,7 +103,6 @@ def index():
         else:
             return render_template_string(HTML_PAGE, message="GitHub'a kaydedilemedi!", count=len(TWITCH_TOKENS))
     
-    # Sayfa her yenilendiğinde GitHub'dan güncel sayıyı çek
     TWITCH_TOKENS = run_async(read_github_tokens())[0]
     return render_template_string(HTML_PAGE, count=len(TWITCH_TOKENS))
 
@@ -123,10 +122,9 @@ class MyBot(commands.Bot):
 
     async def on_ready(self):
         global TWITCH_TOKENS
-        TWITCH_TOKENS = await read_github_tokens()
-        TWITCH_TOKENS = TWITCH_TOKENS[0]
+        TWITCH_TOKENS = (await read_github_tokens())[0]
         print(f"[+] Bot aktif: {self.user.name}")
-        print(f"[+] GitHub'dan Yüklenen Token Sayısı: {len(TWITCH_TOKENS)}")
+        print(f"[+] Yüklenen Token Sayısı: {len(TWITCH_TOKENS)}")
         
         if not any(t.name == "WebServerThread" for t in threading.enumerate()):
             threading.Thread(target=run_web, daemon=True, name="WebServerThread").start()
@@ -140,15 +138,15 @@ async def tfollow(interaction: discord.Interaction, twitch_ismi: str):
 
     await interaction.response.defer()
     
-    # Komut kullanıldığında en güncel listeyi çek
     tokens_data = await read_github_tokens()
-    current_tokens = tokens_data[0]
+    current_tokens = [t.strip() for t in tokens_data[0] if t.strip()] 
     
     if not current_tokens:
         return await interaction.followup.send("❌ Panelden hiç Twitch token'ı eklenmemiş!")
 
     headers = {"Client-ID": TWITCH_CLIENT_ID, "Content-Type": "application/json"}
     
+    # 1. Kanal ID'sini çek
     gql_query = {
         "query": "query($login: String!) { user(login: $login) { id } }",
         "variables": {"login": twitch_ismi}
@@ -163,28 +161,43 @@ async def tfollow(interaction: discord.Interaction, twitch_ismi: str):
 
     success = 0
     fail = 0
+    error_message = ""
+
     follow_mutation = {
         "query": "mutation($targetId: ID!) { followUser(input: { targetID: $targetId }) { follow { user { id } } } }",
         "variables": {"targetId": target_id}
     }
 
     for token in current_tokens:
+        # Tarayıcı taklidi (Twitch botları bu header'lar olmadan reddediyor)
         t_headers = {
             "Client-ID": TWITCH_CLIENT_ID,
             "Authorization": f"OAuth {token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Origin": "https://www.twitch.tv",
+            "Referer": "https://www.twitch.tv/"
         }
         
         async with aiohttp.ClientSession() as session:
             async with session.post("https://gql.twitch.tv/gql", json=follow_mutation, headers=t_headers) as resp:
                 if resp.status == 200:
                     res_data = await resp.json()
-                    if not res_data.get("errors"): success += 1
-                    else: fail += 1
-                else: fail += 1
-        await asyncio.sleep(1.2) # Ban yememek için bekleme
+                    if not res_data.get("errors"): 
+                        success += 1
+                    else: 
+                        fail += 1
+                        error_message = res_data["errors"][0].get("message", "Bilinmeyen Hata")
+                else:
+                    fail += 1
+                    error_message = f"HTTP {resp.status} - Yetkisiz İstek"
+        await asyncio.sleep(1.2) # Rate limit yememek için
 
-    await interaction.followup.send(f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n\n✔️ Başarılı Takip: **{success}**\n❌ Başarısız Token: **{fail}**")
+    msg = f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n\n✔️ Başarılı Takip: **{success}**\n❌ Başarısız Token: **{fail}**"
+    if fail > 0 and error_message:
+        msg += f"\n\n⚠️ **Twitch'in Verdiği Hata:** `{error_message}`"
+        
+    await interaction.followup.send(msg)
 
 if __name__ == "__main__":
     if not TOKEN or not GITHUB_TOKEN or not GITHUB_REPO:
