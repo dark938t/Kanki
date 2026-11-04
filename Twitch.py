@@ -8,6 +8,7 @@ import threading
 import json
 import base64
 from flask import Flask, request, render_template_string
+from playwright.async_api import async_playwright
 
 # ==================== AYARLAR ====================
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -18,7 +19,6 @@ WEB_PORT = int(os.getenv("PORT", 10000))
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE = "twitch_tokens.json"
-TWITCH_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko" 
 # =================================================
 
 TWITCH_TOKENS = []
@@ -63,23 +63,7 @@ async def add_tokens_safely(new_tokens):
 
 # ==================== WEB PANELİ ====================
 web_app = Flask(__name__)
-
-HTML_PAGE = """<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Twitch Token Panel</title>
-<style>body{background:#18181b;color:#fff;font-family:sans-serif;padding:20px;text-align:center;} input,textarea{width:80%;padding:10px;margin:10px 0;background:#2b2b2b;color:#fff;border:1px solid #444;} button{padding:10px 20px;background:#9147ff;color:#fff;border:none;cursor:pointer;} .count{color:#9147ff; font-weight:bold;}</style>
-</head>
-<body>
-    <h2>Twitch Token Ekle</h2>
-    <p>Kasadaki Toplam Token: <span class="count">{{ count }}</span></p>
-    <form method="POST">
-        <input type="password" name="password" placeholder="Panel Şifresi" required><br>
-        <textarea name="tokens" rows="6" placeholder="Her satıra bir token yapıştırın..." required></textarea><br>
-        <button type="submit">Tokenleri Ekle</button>
-    </form>
-    {% if message %}<h3 style="color:lightgreen;">{{ message }}</h3>{% endif %}
-</body>
-</html>"""
+HTML_PAGE = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Panel</title><style>body{background:#18181b;color:#fff;font-family:sans-serif;padding:20px;text-align:center;}input,textarea{width:80%;padding:10px;margin:10px 0;background:#2b2b2b;color:#fff;border:1px solid #444;}button{padding:10px 20px;background:#9147ff;color:#fff;border:none;cursor:pointer;}</style></head><body><h2>Twitch Token Ekle</h2><p>Toplam Token: <b>{{ count }}</b></p><form method="POST"><input type="password" name="password" placeholder="Şifre" required><br><textarea name="tokens" rows="6" required></textarea><br><button type="submit">Ekle</button></form>{% if message %}<h3 style="color:lightgreen;">{{ message }}</h3>{% endif %}</body></html>"""
 
 def run_async(coro):
     loop = asyncio.new_event_loop()
@@ -92,17 +76,13 @@ def index():
     if request.method == 'POST':
         if request.form.get('password') != WEB_PASSWORD:
             return render_template_string(HTML_PAGE, message="Hatalı Şifre!", count=len(TWITCH_TOKENS))
-        
         tokens_raw = request.form.get('tokens')
         new_tokens = [t.strip() for t in tokens_raw.split("\n") if t.strip()]
-        
         success = run_async(add_tokens_safely(new_tokens))
         if success:
             TWITCH_TOKENS = run_async(read_github_tokens())[0]
-            return render_template_string(HTML_PAGE, message=f"{len(new_tokens)} token işlendi!", count=len(TWITCH_TOKENS))
-        else:
-            return render_template_string(HTML_PAGE, message="GitHub'a kaydedilemedi!", count=len(TWITCH_TOKENS))
-    
+            return render_template_string(HTML_PAGE, message="Eklendi!", count=len(TWITCH_TOKENS))
+        return render_template_string(HTML_PAGE, message="Hata!", count=len(TWITCH_TOKENS))
     TWITCH_TOKENS = run_async(read_github_tokens())[0]
     return render_template_string(HTML_PAGE, count=len(TWITCH_TOKENS))
 
@@ -118,89 +98,78 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self):
         await self.tree.sync()
-        print("[+] Slash komutları hazır.")
 
     async def on_ready(self):
         global TWITCH_TOKENS
         TWITCH_TOKENS = (await read_github_tokens())[0]
-        print(f"[+] Bot aktif: {self.user.name}")
-        print(f"[+] Yüklenen Token Sayısı: {len(TWITCH_TOKENS)}")
-        
+        print(f"[+] Bot aktif: {self.user.name} | Token: {len(TWITCH_TOKENS)}")
         if not any(t.name == "WebServerThread" for t in threading.enumerate()):
             threading.Thread(target=run_web, daemon=True, name="WebServerThread").start()
 
 bot = MyBot()
 
-@bot.tree.command(name="tfollow", description="Belirtilen Twitch kanalına takipçi gönderir")
+@bot.tree.command(name="tfollow", description="Takipçi gönder")
 async def tfollow(interaction: discord.Interaction, twitch_ismi: str):
     if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("⛔ Bu komutu sadece Owner kullanabilir.", ephemeral=True)
+        return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
 
     await interaction.response.defer()
-    
     tokens_data = await read_github_tokens()
     current_tokens = [t.strip() for t in tokens_data[0] if t.strip()] 
     
     if not current_tokens:
-        return await interaction.followup.send("❌ Panelden hiç Twitch token'ı eklenmemiş!")
-
-    headers = {"Client-ID": TWITCH_CLIENT_ID, "Content-Type": "application/json"}
-    
-    # 1. Kanal ID'sini çek
-    gql_query = {
-        "query": "query($login: String!) { user(login: $login) { id } }",
-        "variables": {"login": twitch_ismi}
-    }
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post("https://gql.twitch.tv/gql", json=gql_query, headers=headers) as resp:
-            data = await resp.json()
-            if not data.get("data") or not data["data"].get("user"):
-                return await interaction.followup.send(f"❌ **{twitch_ismi}** adında bir Twitch kanalı bulunamadı.")
-            target_id = data["data"]["user"]["id"]
+        return await interaction.followup.send("❌ Token yok!")
 
     success = 0
     fail = 0
     error_message = ""
 
-    # DÜZELTİLEN KISIM: disableNotifications: false eklendi
-    follow_mutation = {
-        "query": "mutation($targetId: ID!) { followUser(input: { targetID: $targetId, disableNotifications: false }) { follow { user { id } } } }",
-        "variables": {"targetId": target_id}
-    }
-
-    for token in current_tokens:
-        t_headers = {
-            "Client-ID": TWITCH_CLIENT_ID,
-            "Authorization": f"OAuth {token}",
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Origin": "https://www.twitch.tv",
-            "Referer": "https://www.twitch.tv/"
-        }
+    # PLAYWRIGHT İLE GERÇEK TARAYICI AÇIYORUZ
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://gql.twitch.tv/gql", json=follow_mutation, headers=t_headers) as resp:
-                if resp.status == 200:
-                    res_data = await resp.json()
-                    if not res_data.get("errors"): 
-                        success += 1
-                    else: 
-                        fail += 1
-                        error_message = res_data["errors"][0].get("message", "Bilinmeyen Hata")
+        for token in current_tokens:
+            try:
+                context = await browser.new_context()
+                # Token'ı çerez olarak tarayıcıya ekle
+                await context.add_cookies([{
+                    "name": "auth-token",
+                    "value": token,
+                    "domain": ".twitch.tv",
+                    "path": "/"
+                }])
+                
+                page = await context.new_page()
+                # Hedef kanalın sayfasına git
+                await page.goto(f"https://www.twitch.tv/{twitch_ismi}", wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(3) # Sayfanın yüklenmesini bekle
+
+                # "Takip Et" (Follow) butonunu bul ve tıkla
+                follow_btn = page.locator('[data-a-target="follow-button"]')
+                
+                if await follow_btn.count() > 0:
+                    # Butonda "Takip Et" yazıyorsa tıkla
+                    await follow_btn.click(timeout=5000)
+                    success += 1
                 else:
+                    # Buton yoksa ya zaten takip ediyordur ya da başka bir sorun vardır
                     fail += 1
-                    error_message = f"HTTP {resp.status} - Yetkisiz İstek"
-        await asyncio.sleep(1.2)
+                
+                await context.close()
+            except Exception as e:
+                fail += 1
+                error_message = str(e)
+            
+            await asyncio.sleep(2) # Ban yememek için bekle
 
-    msg = f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n\n✔️ Başarılı Takip: **{success}**\n❌ Başarısız Token: **{fail}**"
+        await browser.close()
+
+    msg = f"✅ Bitti!\n🎯 Hedef: **{twitch_ismi}**\n\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{fail}**"
     if fail > 0 and error_message:
-        msg += f"\n\n⚠️ **Twitch'in Verdiği Hata:** `{error_message}`"
-        
+        msg += f"\n\n⚠️ Hata: `{error_message}`"
     await interaction.followup.send(msg)
 
 if __name__ == "__main__":
     if not TOKEN or not GITHUB_TOKEN or not GITHUB_REPO:
-        print("❌ Eksik Environment değişkeni!")
         exit()
     bot.run(TOKEN)
