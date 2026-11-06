@@ -28,11 +28,7 @@ ADMIN_PASSWORD = os.getenv("WEB_PASSWORD", "ravex123")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 
-STOK_FILES = {
-    "normal": "stok.json",
-    "premium": "Premiumstok.json",
-    "exclusive": "Exclusivestok.json"
-}
+STOK_FILES = {"normal": "stok.json", "premium": "Premiumstok.json", "exclusive": "Exclusivestok.json"}
 TWITCH_FILE = "twitch_tokens.json"
 AUTH_FILE = "auth_tokens.json"
 
@@ -175,14 +171,28 @@ class MyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(command_prefix=".", intents=intents)
+        # DİKKAT: Prefix boş bırakıldı, sadece slash komutları çalışır.
+        super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.cooldowns = {}
 
     async def setup_hook(self):
-        await self.tree.sync()
+        # SUNUCUYA ÖZEL ANLIK SENKRONİZASYON
+        print("Bot başlatılıyor, komutlar senkronize ediliyor...")
+        try:
+            # Önce global senkronize et
+            synced = await self.tree.sync()
+            print(f"[+] Global olarak {len(synced)} komut senkronize edildi.")
+            
+            # Sonra her sunucuya özel anında yükle
+            for guild in self.guilds:
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                print(f"[+] {guild.name} sunucusuna komutlar yüklendi.")
+        except Exception as e:
+            print(f"[-] Senkronizasyon Hatası: {e}")
 
     async def on_ready(self):
-        print(f"[+] Bot aktif: {self.user.name}")
+        print(f"[+] Bot aktif: {self.user.name} ({self.user.id})")
         if not any(t.name == "WebServerThread" for t in threading.enumerate()):
             threading.Thread(target=run_web, daemon=True, name="WebServerThread").start()
 
@@ -262,16 +272,13 @@ async def join_cmd(interaction: discord.Interaction, sunucu_id: str, kac_adam: i
 async def ekle_cmd(interaction: discord.Interaction, plan: app_commands.Choice[str], service: app_commands.Choice[str], hesaplar: str):
     if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
-    
     lines = [line.strip() for line in hesaplar.split("\n") if line.strip()]
     if not lines: return await interaction.followup.send("❌ Boş hesap listesi.", ephemeral=True)
-    
     async with github_lock:
         stock, sha = await read_github_file(STOK_FILES[plan.value])
         if service.value == "steam": stock["steam"].extend(lines)
         else: stock["netflix"].extend(lines)
         success = await write_github_file(STOK_FILES[plan.value], stock, sha)
-        
     if success: await interaction.followup.send(f"✅ **{len(lines)}** adet hesap **{plan.name} / {service.name}** stoklarına eklendi!", ephemeral=True)
     else: await interaction.followup.send("❌ Stok eklenirken hata oluştu.", ephemeral=True)
 
