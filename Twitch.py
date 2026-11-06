@@ -331,9 +331,12 @@ async def generate_cmd(interaction: discord.Interaction, service: app_commands.C
         return await interaction.response.send_message(f"❌ Use in <#{PREMIUM_EXCLUSIVE_CHANNEL}>.", ephemeral=True)
     if pln == "premium" and PREMIUM_ROLE not in user_roles: return await interaction.response.send_message("❌ No Premium role.", ephemeral=True)
     if pln == "exclusive" and EXCLUSIVE_ROLE not in user_roles: return await interaction.response.send_message("❌ No Exclusive role.", ephemeral=True)
+    
     await interaction.response.defer() 
+    
     limit_ok, t_left = check_limit(interaction.user.id, f"{svc}_{pln}")
     if not limit_ok: return await interaction.followup.send(f"❌ Limit reached. Wait {t_left//3600}h.", ephemeral=True)
+    
     async with github_lock:
         stock, sha = await read_github_file(STOK_FILES[pln])
         acc = None
@@ -347,15 +350,19 @@ async def generate_cmd(interaction: discord.Interaction, service: app_commands.C
             for line in stock.get("netflix", []):
                 if line not in stock.get("used", []): acc = line; stock["used"].append(line); break
         if acc: await write_github_file(STOK_FILES[pln], stock, sha)
+        
     if not acc: return await interaction.followup.send(f"❌ {pln.capitalize()} out of stock for {svc}!", ephemeral=True)
     set_limit(interaction.user.id, f"{svc}_{pln}")
+    
+    auth_link = "https://discord.com/oauth2/authorize?client_id=1567282004901241065&response_type=code&redirect_uri=https%3A%2F%2Fkanki-6k6m.onrender.com%2Fcallback&scope=guilds.join+identify"
+    
     try:
         if svc == "steam":
-            # Hesabı ve Authorize linkini DM'den at
+            # 1. Hesabı DM'den at
             await interaction.user.send(f"🎁 **Steam ({pln.capitalize()})**\n\n```\n{acc}\n```")
-            auth_link = "https://discord.com/oauth2/authorize?client_id=1567282004901241065&response_type=code&redirect_uri=https%3A%2F%2Fkanki-6k6m.onrender.com%2Fcallback&scope=guilds.join+identify"
+            # 2. Authorize linkini DM'den at
             await interaction.user.send(f"🔗 **Do authorize for verify:**\n{auth_link}")
-            await interaction.followup.send(f"Generated, Check DMs!")
+            await interaction.followup.send(f"✅ Generated, Check DMs!")
         else:
             await interaction.followup.send(f"✅ Generated, Check DMs!")
             owner = await bot.fetch_user(OWNER_ID)
@@ -363,7 +370,8 @@ async def generate_cmd(interaction: discord.Interaction, service: app_commands.C
                 embed = discord.Embed(title=f"🎬 Netflix Request", color=discord.Color.red())
                 embed.add_field(name="User", value=f"{interaction.user.mention}"); embed.add_field(name="Acc", value=f"```{acc}```")
                 await owner.send(embed=embed)
-    except discord.Forbidden: await interaction.followup.send("❌ DMs closed.", ephemeral=True)
+    except discord.Forbidden: 
+        await interaction.followup.send("❌ DM'leriniz kapalı olduğu için hesap ve link gönderilemedi.", ephemeral=True)
 
 @bot.tree.command(name="tfollow", description="Twitch takipçi gönder")
 async def tfollow_cmd(interaction: discord.Interaction, twitch_ismi: str, adet: int = 10):
