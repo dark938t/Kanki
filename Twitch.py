@@ -10,7 +10,7 @@ import json
 import base64
 import random
 import time
-from flask import Flask, request, render_template_string, redirect
+from flask import Flask, request, render_template_string, redirect, session
 from urllib.parse import urlencode
 from dotenv import load_dotenv
 
@@ -18,12 +18,12 @@ load_dotenv()
 
 # ==================== AYARLAR ====================
 TOKEN = os.getenv("DISCORD_TOKEN")
-CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_ID = "1567282004901241065"
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 OWNER_ID = int(os.getenv("OWNER_ID", 0))
 REDIRECT_URI = "https://kanki-6k6m.onrender.com/callback"
 WEB_PORT = int(os.getenv("PORT", 10000))
-WEB_PASSWORD = os.getenv("WEB_PASSWORD", "ravex123")
+ADMIN_PASSWORD = os.getenv("WEB_PASSWORD", "ravex123")
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
@@ -48,6 +48,8 @@ PREMIUM_EXCLUSIVE_CHANNEL = 1566423682371420273
 github_lock = asyncio.Lock()
 pending_netflix = {} 
 approved_netflix = {}
+web_app = Flask(__name__)
+web_app.secret_key = "ravex_secret_key_123"
 
 # ==================== GITHUB VERİTABANI ====================
 async def github_get_headers():
@@ -74,7 +76,7 @@ async def write_github_file(filename, data, sha):
             return resp.status in [200, 201]
 # =========================================================
 
-# ==================== TWITCH FOLLOWER SINIFI ====================
+# ==================== TWITCH FOLLOWER ====================
 class TwitchFollower:
     def __init__(self):
         self.proxies = self._load_proxies()
@@ -107,14 +109,12 @@ class TwitchFollower:
     async def execute_follow(self, target_id, token):
         headers = {"Accept": "application/json", "Authorization": f"OAuth {token}", "Content-Type": "application/json"}
         payload = json.dumps([{"operationName": "FollowUserMutation", "variables": {"targetId": str(target_id), "disableNotifications": False}, "extensions": {"persistedQuery": {"version": 1, "sha256Hash": "cd112d9483ede85fa0da514a5657141c24396efbc7bac0ea3623e839206573b8"}}}])
-        
         max_retries = len(self.proxies) if self.proxies else 1
         for _ in range(max_retries):
             proxy_url = None
             if self.proxies:
                 proxy_url = self.proxies[self.proxy_index % len(self.proxies)]
                 self.proxy_index += 1
-            
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.post("https://gql.twitch.tv/gql", data=payload, headers=headers, proxy=proxy_url) as response:
@@ -125,26 +125,86 @@ class TwitchFollower:
                 if proxy_url in self.proxies: self.proxies.remove(proxy_url)
             await asyncio.sleep(0.5)
         return False
-# =========================================================
 
 # ==================== WEB PANELİ ====================
-web_app = Flask(__name__)
+HTML_HOME = """
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Ravex System</title>
+<style>
+body{background:#121212;color:#fff;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;flex-direction:column;}
+h1{color:#5865F2;}
+.menu{display:flex;gap:20px;margin-top:20px;}
+.btn{padding:15px 30px;border-radius:8px;text-decoration:none;color:white;font-weight:bold;font-size:18px;transition:0.2s;}
+.btn-admin{background:#e74c3c;}
+.btn-admin:hover{background:#c0392b;}
+.btn-free{background:#2ecc71;}
+.btn-free:hover{background:#27ae60;}
+</style></head><body>
+<h1>Ravex System</h1>
+<div class="menu">
+    <a href="/admin" class="btn btn-admin">Admin Login</a>
+    <a href="/free" class="btn btn-free">Free Login</a>
+</div>
+</body></html>"""
 
-HTML_INDEX = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Ravex Panel</title><style>body{background:#121212;color:#fff;font-family:sans-serif;padding:20px;text-align:center;}.box{max-width:500px;margin:auto;background:#1e1e1e;padding:20px;border-radius:10px;margin-bottom:20px;}input,select,textarea{width:100%;padding:10px;margin:5px 0;background:#2b2b2b;color:white;border:1px solid #333;box-sizing:border-box;}button{width:100%;padding:10px;background:#7289da;color:white;border:none;margin-top:10px;cursor:pointer;}button:hover{background:#5b6eae;}.auth-btn{background:#3ba55d;display:block;text-decoration:none;color:white;padding:10px;border-radius:5px;margin-top:10px;}</style></head><body>
-<div class="box"><h2>🔗 Sunucuya Adam Çek</h2><a href="/login" class="auth-btn">Authorize (Giriş Yap)</a></div>
-<div class="box"><h2>📦 Stok Ekle</h2><form method="POST" action="/add_stock"><input type="password" name="password" placeholder="Panel Şifresi" required><select name="plan"><option value="normal">Normal</option><option value="premium">Premium</option><option value="exclusive">Exclusive</option></select><select name="service"><option value="steam">Steam</option><option value="netflix">Netflix</option></select><textarea name="accounts" rows="5" required placeholder="Her satıra bir hesap..."></textarea><button type="submit">Stok Ekle</button></form></div>
-<div class="box"><h2>🎮 Twitch Token Ekle</h2><form method="POST" action="/add_twitch"><input type="password" name="password" placeholder="Panel Şifresi" required><textarea name="tokens" rows="5" required placeholder="Her satıra bir token..."></textarea><button type="submit">Token Ekle</button></form></div>
+HTML_ADMIN_LOGIN = """
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Admin Login</title>
+<style>body{background:#121212;color:#fff;font-family:sans-serif;text-align:center;padding-top:100px;}
+input{padding:10px;font-size:16px;border-radius:5px;border:none;margin-bottom:10px;width:300px;}
+button{padding:10px 20px;background:#e74c3c;color:white;border:none;border-radius:5px;cursor:pointer;}
+</style></head><body>
+<h2>Admin Login</h2>
+<form method="POST">
+    <input type="password" name="password" placeholder="Şifre Girin" required><br>
+    <button type="submit">Giriş Yap</button>
+</form>
+{% if error %}<p style="color:red;">{{ error }}</p>{% endif %}
+</body></html>"""
+
+HTML_ADMIN_PANEL = """
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Admin Panel</title>
+<style>body{background:#121212;color:#fff;font-family:sans-serif;padding:20px;text-align:center;}
+.box{max-width:500px;margin:auto;background:#1e1e1e;padding:20px;border-radius:10px;margin-bottom:20px;}
+input,select,textarea{width:100%;padding:10px;margin:5px 0;background:#2b2b2b;color:white;border:1px solid #333;box-sizing:border-box;}
+button{width:100%;padding:10px;background:#2ecc71;color:white;border:none;margin-top:10px;cursor:pointer;border-radius:5px;}
+</style></head><body>
+<div class="box"><h2>📦 Stok Ekle (Steam/Netflix)</h2>
+<form method="POST" action="/add_stock">
+    <select name="plan"><option value="normal">Normal</option><option value="premium">Premium</option><option value="exclusive">Exclusive</option></select>
+    <select name="service"><option value="steam">Steam</option><option value="netflix">Netflix</option></select>
+    <textarea name="accounts" rows="5" required placeholder="Her satıra bir hesap..."></textarea>
+    <button type="submit">Stok Ekle</button>
+</form></div>
+<div class="box"><h2>🎮 Twitch Token Ekle</h2>
+<form method="POST" action="/add_twitch">
+    <textarea name="tokens" rows="5" required placeholder="Her satıra bir token..."></textarea>
+    <button type="submit">Token Ekle</button>
+</form></div>
+<a href="/" style="color:white;">Ana Menüye Dön</a>
 </body></html>"""
 
 @web_app.route('/')
-def index():
-    return render_template_string(HTML_INDEX)
+def home():
+    return HTML_HOME
+
+@web_app.route('/admin', methods=['GET', 'POST'])
+def admin():
+    if request.method == 'POST':
+        if request.form.get('password') == ADMIN_PASSWORD:
+            session['admin'] = True
+            return redirect('/admin_panel')
+        return render_template_string(HTML_ADMIN_LOGIN, error="Hatalı Şifre!")
+    return HTML_ADMIN_LOGIN
+
+@web_app.route('/admin_panel')
+def admin_panel():
+    if not session.get('admin'): return redirect('/admin')
+    return HTML_ADMIN_PANEL
 
 @web_app.route('/add_stock', methods=['POST'])
 def add_stock():
-    if request.form.get('password') != WEB_PASSWORD: return "Hatalı Şifre", 403
+    if not session.get('admin'): return "Yetkisiz", 403
     plan, service, accounts_raw = request.form.get('plan'), request.form.get('service'), request.form.get('accounts')
-    if not accounts_raw.strip(): return "Boş veri", 400
+    if not accounts_raw.strip(): return "Boş", 400
     lines = [line.strip() for line in accounts_raw.split("\n") if line.strip()]
     def run_async(coro):
         loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
@@ -155,12 +215,12 @@ def add_stock():
             if service == "steam": stock["steam"].extend(lines)
             else: stock["netflix"].extend(lines)
             return await write_github_file(STOK_FILES[plan], stock, sha)
-    if run_async(save()): return redirect('/')
+    if run_async(save()): return redirect('/admin_panel')
     return "Hata", 500
 
 @web_app.route('/add_twitch', methods=['POST'])
 def add_twitch():
-    if request.form.get('password') != WEB_PASSWORD: return "Hatalı Şifre", 403
+    if not session.get('admin'): return "Yetkisiz", 403
     tokens_raw = request.form.get('tokens')
     new_tokens = [t.strip() for t in tokens_raw.split("\n") if t.strip()]
     def run_async(coro):
@@ -171,12 +231,12 @@ def add_twitch():
             tokens, sha = await read_github_file(TWITCH_FILE)
             tokens.extend(new_tokens)
             return await write_github_file(TWITCH_FILE, tokens, sha)
-    if run_async(save()): return redirect('/')
+    if run_async(save()): return redirect('/admin_panel')
     return "Hata", 500
 
-@web_app.route('/login')
-def login():
-    params = {"client_id": CLIENT_ID, "redirect_uri": REDIRECT_URI, "response_type": "code", "scope": "identify guilds.join"}
+@web_app.route('/free')
+def free_login():
+    params = {"client_id": CLIENT_ID, "redirect_uri": REDIRECT_URI, "response_type": "code", "scope": "guilds.join identify"}
     return redirect(f"https://discord.com/api/oauth2/authorize?{urlencode(params)}")
 
 @web_app.route('/callback')
@@ -206,11 +266,11 @@ def run_web():
     web_app.run(host='0.0.0.0', port=WEB_PORT)
 # =========================================================
 
-# ==================== TICKET VE MENÜLER (HATA DÜZELTİLDİ) ====================
+# ==================== TICKET MENÜLERİ ====================
 class TicketSelectMenu(discord.ui.Select):
     def __init__(self):
         options = [discord.SelectOption(label="Support", emoji="🎧", value="Support"), discord.SelectOption(label="General", emoji="💬", value="General")]
-        super().__init__(placeholder="Select a category...", min_values=1, max_values=1, options=options, custom_id="ticket_menu_select") # Hata buradaydı, custom_id eklendi.
+        super().__init__(placeholder="Select a category...", min_values=1, max_values=1, options=options, custom_id="ticket_menu_select")
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         await create_ticket(interaction, self.values[0])
@@ -287,37 +347,14 @@ async def create_ticket(interaction: discord.Interaction, category: str):
 async def ticket_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=discord.Embed(title="🎟️ Support", description="Select category."), view=TicketMenuView())
 
-# --- AUTHORIZE LİNKİNİ DM'DEN ATMA KOMUTU ---
-@bot.tree.command(name="dm", description="Hedef kişiye OAuth2 linkini DM'den atar")
-async def dm_cmd(interaction: discord.Interaction, hedef: discord.User):
-    if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
-    await interaction.response.defer(ephemeral=True)
-    
-    params = {"client_id": CLIENT_ID, "redirect_uri": REDIRECT_URI, "response_type": "code", "scope": "guilds.join identify"}
-    auth_url = f"https://discord.com/api/oauth2/authorize?{urlencode(params)}"
-    
-    embed = discord.Embed(title="🔗 Sunucuya Katılma Daveti", color=discord.Color.blue())
-    embed.description = f"Merhaba {hedef.mention},\n\nAşağıdaki linke tıklayarak Discord hesabınla sunucuya katılmayı kabul edebilirsin.\n\n[👉 **BURAYA TIKLA**]({auth_url})"
-    embed.set_footer(text="Bu link tek kullanımlıktır.")
-    
-    try:
-        await hedef.send(embed=embed)
-        await interaction.followup.send(f"✅ DM gönderildi: {hedef.mention}", ephemeral=True)
-    except discord.Forbidden:
-        await interaction.followup.send("❌ Bu kişinin DM'leri kapalı.", ephemeral=True)
-
-# --- /JOIN KOMUTU ---
 @bot.tree.command(name="join", description="Yetki veren hesapları sunucuya sokar")
 async def join_cmd(interaction: discord.Interaction, sunucu_linki: str, adet: int = 10):
     if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
     await interaction.response.defer()
     invite_code = sunucu_linki.split("/")[-1]
-    
     tokens_data = await read_github_file(AUTH_FILE)
     current_tokens = [t.strip() for t in tokens_data[0] if t.strip()]
-    
-    if not current_tokens: return await interaction.followup.send("❌ Kimse yetki vermemiş! `/dm` komutuyla davet at.")
-
+    if not current_tokens: return await interaction.followup.send("❌ Kimse yetki vermemiş!")
     selected_tokens = random.sample(current_tokens, min(adet, len(current_tokens)))
     msg = await interaction.followup.send(f"⏳ **{sunucu_linki}** için {len(selected_tokens)} hesap sokuluyor...")
     success, fail = 0, 0
@@ -341,7 +378,6 @@ async def join_cmd(interaction: discord.Interaction, sunucu_linki: str, adet: in
         await asyncio.sleep(1.5)
     await msg.edit(content=f"✅ Bitti!\nHedef: **{sunucu_linki}**\n\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{fail}**")
 
-# --- STOK & GENERATE ---
 @bot.tree.command(name="generate", description="Hesap üretir")
 @app_commands.choices(
     service=[app_commands.Choice(name="Netflix", value="netflix"), app_commands.Choice(name="Steam", value="steam")],
@@ -353,11 +389,9 @@ async def generate_cmd(interaction: discord.Interaction, service: app_commands.C
         return await interaction.response.send_message(f"❌ Use in <#{PREMIUM_EXCLUSIVE_CHANNEL}>.", ephemeral=True)
     if pln == "premium" and PREMIUM_ROLE not in user_roles: return await interaction.response.send_message("❌ No Premium role.", ephemeral=True)
     if pln == "exclusive" and EXCLUSIVE_ROLE not in user_roles: return await interaction.response.send_message("❌ No Exclusive role.", ephemeral=True)
-    
     await interaction.response.defer() 
     limit_ok, t_left = check_limit(interaction.user.id, f"{svc}_{pln}")
     if not limit_ok: return await interaction.followup.send(f"❌ Limit reached. Wait {t_left//3600}h.", ephemeral=True)
-    
     async with github_lock:
         stock, sha = await read_github_file(STOK_FILES[pln])
         acc = None
@@ -371,10 +405,8 @@ async def generate_cmd(interaction: discord.Interaction, service: app_commands.C
             for line in stock.get("netflix", []):
                 if line not in stock.get("used", []): acc = line; stock["used"].append(line); break
         if acc: await write_github_file(STOK_FILES[pln], stock, sha)
-        
     if not acc: return await interaction.followup.send(f"❌ {pln.capitalize()} out of stock for {svc}!", ephemeral=True)
     set_limit(interaction.user.id, f"{svc}_{pln}")
-    
     try:
         if svc == "steam":
             await interaction.user.send(f"🎁 **Steam ({pln.capitalize()})**\n\n```\n{acc}\n```")
@@ -388,20 +420,16 @@ async def generate_cmd(interaction: discord.Interaction, service: app_commands.C
                 await owner.send(embed=embed)
     except discord.Forbidden: await interaction.followup.send("❌ DMs closed.", ephemeral=True)
 
-# --- TWITCH TAKİPÇİ ---
 @bot.tree.command(name="tfollow", description="Twitch takipçi gönder")
 async def tfollow_cmd(interaction: discord.Interaction, twitch_ismi: str, adet: int = 10):
     if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
     await interaction.response.defer()
-    
     tokens_data = await read_github_file(TWITCH_FILE)
     current_tokens = [t.strip() for t in tokens_data[0] if t.strip()]
     if not current_tokens: return await interaction.followup.send("❌ Token yok!")
-
     follower = TwitchFollower()
     target_id = await follower.get_user_id(twitch_ismi)
     if not target_id: return await interaction.followup.send(f"❌ Kanal bulunamadı.")
-
     msg = await interaction.followup.send(f"⏳ **{twitch_ismi}** için işlem başlatıldı...")
     selected_tokens = random.sample(current_tokens, min(adet, len(current_tokens)))
     success, fail = 0, 0
@@ -411,7 +439,6 @@ async def tfollow_cmd(interaction: discord.Interaction, twitch_ismi: str, adet: 
         await asyncio.sleep(1.0)
     await msg.edit(content=f"✅ Bitti!\n🎯 Hedef: **{twitch_ismi}**\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{fail}**")
 
-# --- DİĞER MODERASYON KOMUTLARI ---
 @bot.tree.command(name="delete", description="Delete messages")
 async def delete_cmd(interaction: discord.Interaction, amount: int, empty_only: bool = True):
     if not any(r.id in STAFF_ROLES for r in interaction.user.roles) and interaction.user.id != OWNER_ID: return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
@@ -477,7 +504,6 @@ async def unblacklist_cmd(interaction: discord.Interaction, user: discord.Member
 async def on_message(message):
     if message.author.bot or not isinstance(message.channel, discord.DMChannel) or message.author.id != OWNER_ID: return
     content = message.content.lower().strip()
-    
     parts = message.content.split("<@")
     if len(parts) > 1:
         user_id_str = parts[1].split(">")[0].replace("!", "")
@@ -493,7 +519,6 @@ async def on_message(message):
             user = await bot.fetch_user(user_id)
             await message.reply(f"✅ Okeylendi: **{user.name}**\n`.send @{user.name}`")
         else: await message.reply("❌ Bekleyen istek yok.")
-            
     elif content.startswith(".send"):
         if user_id in approved_netflix:
             acc = approved_netflix.pop(user_id)
