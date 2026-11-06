@@ -8,7 +8,6 @@ import threading
 import json
 import base64
 import random
-import time
 from flask import Flask, request, render_template_string
 
 # ==================== AYARLAR ====================
@@ -106,6 +105,7 @@ class TwitchFollower:
             self._log(f"ID Hatası: {e}")
         return False
 
+    # HATA YAKALAMA EKLENDİ
     async def _execute_follow_request(self, target_id, token, target_username):
         try:
             headers = {
@@ -127,40 +127,46 @@ class TwitchFollower:
             async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
                 async with session.post("https://gql.twitch.tv/gql", data=payload, headers=headers, proxy=proxy_url) as response:
                     result_text = await response.text()
-                    if response.status in (200, 204) and "errors" not in result_text.lower():
-                        return True
-                    return False
+                    
+                    # Twitch'ten ne cevap geldiyse kaydet
+                    if response.status in (200, 204):
+                        if "errors" not in result_text.lower():
+                            return True, "Başarılı"
+                        else:
+                            try:
+                                err_json = json.loads(result_text)
+                                err_msg = err_json[0]["errors"][0]["message"]
+                                return False, err_msg
+                            except:
+                                return False, "Bilinmeyen API Hatası"
+                    else:
+                        return False, f"HTTP {response.status}: {result_text[:50]}"
+                        
         except Exception as e:
-            # Proxy hatası olursa sessizce geç
-            return False
+            # Proxy'nin ölü olup olmadığını anlarız
+            return False, str(e)
 
     async def execute_follows_async(self, target_id, follow_count, tokens_data, target_username, log_fn):
         self.running = True
-        stats = {"completed": 0, "failed": 0}
-        tasks = []
+        success = 0
+        failed = 0
+        last_error = "Yok"
         
-        # 1530 token'da takılmaması için sadece istenen adet kadar (örn: 10) rastgele token seçiyoruz
         selected_tokens = random.sample(tokens_data, min(follow_count, len(tokens_data)))
-        
-        await log_fn(f"⚙️ {len(selected_tokens)} hesap seçildi. Proxylerle gönderim başlıyor...")
-
-        async def worker(token):
-            if stats["completed"] >= follow_count: return
-            success = await self._execute_follow_request(target_id, token, target_username)
-            if success:
-                stats["completed"] += 1
-            else:
-                stats["failed"] += 1
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+        await log_fn(f"⚙️ {len(selected_tokens)} hesap ile gönderim başlıyor...")
 
         for token in selected_tokens:
-            tasks.append(asyncio.create_task(worker(token)))
-        
-        # Sadece 10 hesap olduğu için hepsi aynı anda çalışabilir
-        await asyncio.gather(*tasks)
-        
+            is_ok, msg = await self._execute_follow_request(target_id, token, target_username)
+            if is_ok:
+                success += 1
+            else:
+                failed += 1
+                last_error = msg # Son hatayı kaydet
+            
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+
         self.running = False
-        return stats
+        return success, failed, last_error
 # =========================================================================
 
 # ==================== WEB PANELİ ====================
@@ -235,10 +241,12 @@ async def tfollow(interaction: discord.Interaction, twitch_ismi: str, adet: int 
         try: await msg.edit(content=text)
         except: pass
 
-    # Arka planda takip işlemini başlat ve bitmesini bekle
-    stats = await follower.execute_follows_async(target_id, adet, current_tokens, twitch_ismi, log_fn)
+    success, failed, last_error = await follower.execute_follows_async(target_id, adet, current_tokens, twitch_ismi, log_fn)
     
-    await msg.edit(content=f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n\n✔️ Başarılı (Twitch'e Gönderilen): **{stats['completed']}**\n❌ Proxy/Token Hatası: **{stats['failed']}**\n\n*(Not: Twitch bot takiplerini 2-5 dakika sonra yayına yansıtır, hemen gözükmez).*")
+    # Hata mesajını Discord'a gönder
+    error_display = f"\n\n⚠️ **Son Hata Sebebi:** `{last_error}`" if failed > 0 else ""
+    
+    await msg.edit(content=f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{failed}**{error_display}")
 
 if __name__ == "__main__":
     if not TOKEN or not GITHUB_TOKEN or not GITHUB_REPO:
