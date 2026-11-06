@@ -58,7 +58,7 @@ async def add_tokens_safely(new_tokens):
         return await write_github_tokens(tokens, sha)
 # =========================================================
 
-# ==================== TWITCH FOLLOWER SINIFI (Asenkron Uyarlanmış) ====================
+# ==================== TWITCH FOLLOWER SINIFI ====================
 class TwitchFollower:
     def __init__(self, log_callback=print):
         self.log_callback = log_callback
@@ -121,9 +121,8 @@ class TwitchFollower:
             }])
 
             proxy_url = random.choice(self.proxies) if self.proxies else None
-
             connector = aiohttp.TCPConnector(ssl=False)
-            timeout = aiohttp.ClientTimeout(total=15)
+            timeout = aiohttp.ClientTimeout(total=20)
             
             async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
                 async with session.post("https://gql.twitch.tv/gql", data=payload, headers=headers, proxy=proxy_url) as response:
@@ -131,47 +130,37 @@ class TwitchFollower:
                     if response.status in (200, 204) and "errors" not in result_text.lower():
                         return True
                     return False
-        except Exception:
+        except Exception as e:
+            # Proxy hatası olursa sessizce geç
             return False
 
-    async def _follow_worker(self, target_id, tokens_list, target_username, max_follows, stats):
-        while self.running and stats["completed"] < max_follows:
-            available_token = None
-            async with self.lock:
-                unused_tokens = [t for t in tokens_list if t not in self.followed_records or target_id not in self.followed_records[t]]
-                if unused_tokens:
-                    available_token = random.choice(unused_tokens)
-                else:
-                    break
-            
-            if not available_token:
-                await asyncio.sleep(0.5)
-                continue
-            
-            success = await self._execute_follow_request(target_id, available_token, target_username)
-            
-            if success:
-                async with self.lock:
-                    stats["completed"] += 1
-                    if available_token not in self.followed_records:
-                        self.followed_records[available_token] = []
-                    self.followed_records[available_token].append(target_id)
-            
-            await asyncio.sleep(random.uniform(0.1, 0.3))
-
-    async def execute_follows_async(self, target_id, follow_count, tokens_data, target_username):
+    async def execute_follows_async(self, target_id, follow_count, tokens_data, target_username, log_fn):
         self.running = True
-        stats = {"completed": 0}
+        stats = {"completed": 0, "failed": 0}
         tasks = []
-        num_workers = min(50, follow_count, len(tokens_data))
         
-        for _ in range(num_workers):
-            tasks.append(asyncio.create_task(self._follow_worker(target_id, tokens_data, target_username, follow_count, stats)))
-            await asyncio.sleep(0.01)
+        # 1530 token'da takılmaması için sadece istenen adet kadar (örn: 10) rastgele token seçiyoruz
+        selected_tokens = random.sample(tokens_data, min(follow_count, len(tokens_data)))
         
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await log_fn(f"⚙️ {len(selected_tokens)} hesap seçildi. Proxylerle gönderim başlıyor...")
+
+        async def worker(token):
+            if stats["completed"] >= follow_count: return
+            success = await self._execute_follow_request(target_id, token, target_username)
+            if success:
+                stats["completed"] += 1
+            else:
+                stats["failed"] += 1
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+
+        for token in selected_tokens:
+            tasks.append(asyncio.create_task(worker(token)))
+        
+        # Sadece 10 hesap olduğu için hepsi aynı anda çalışabilir
+        await asyncio.gather(*tasks)
+        
         self.running = False
-        return stats["completed"]
+        return stats
 # =========================================================================
 
 # ==================== WEB PANELİ ====================
@@ -236,17 +225,20 @@ async def tfollow(interaction: discord.Interaction, twitch_ismi: str, adet: int 
 
     follower = TwitchFollower()
     
-    # Kanal ID'sini bekle (await kullanıldı)
     target_id = await follower.get_user_id(twitch_ismi)
     if not target_id:
         return await interaction.followup.send(f"❌ **{twitch_ismi}** adında bir Twitch kanalı bulunamadı.")
 
-    msg = await interaction.followup.send(f"⏳ **{twitch_ismi}** için {adet} takipçi gönderiliyor...")
+    msg = await interaction.followup.send(f"⏳ **{twitch_ismi}** için takip işlemi başlatıldı...")
 
-    # Arka planda takip işlemini başlat
-    completed = await follower.execute_follows_async(target_id, adet, current_tokens, twitch_ismi)
+    async def log_fn(text):
+        try: await msg.edit(content=text)
+        except: pass
+
+    # Arka planda takip işlemini başlat ve bitmesini bekle
+    stats = await follower.execute_follows_async(target_id, adet, current_tokens, twitch_ismi, log_fn)
     
-    await msg.edit(content=f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n📊 Başarılı Takip: **{completed}**")
+    await msg.edit(content=f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n\n✔️ Başarılı (Twitch'e Gönderilen): **{stats['completed']}**\n❌ Proxy/Token Hatası: **{stats['failed']}**\n\n*(Not: Twitch bot takiplerini 2-5 dakika sonra yayına yansıtır, hemen gözükmez).*")
 
 if __name__ == "__main__":
     if not TOKEN or not GITHUB_TOKEN or not GITHUB_REPO:
