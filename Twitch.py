@@ -21,7 +21,6 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 OWNER_ID = int(os.getenv("OWNER_ID", 0))
-# YENİ RENDER LİNKİN
 REDIRECT_URI = "https://kanki-6k6m.onrender.com/callback"
 WEB_PORT = int(os.getenv("PORT", 10000))
 WEB_PASSWORD = os.getenv("WEB_PASSWORD", "ravex123")
@@ -200,18 +199,18 @@ def callback():
                         await write_github_file(AUTH_FILE, tokens, sha)
                     return True
         return False
-    if run_async(get_token()): return "<h1 style='color:lightgreen;text-align:center;'>✅ Başarıyla Yetkilendirildi!</h1>"
-    return "<h1 style='color:red;text-align:center;'>❌ Yetkilendirme Başarısız!</h1>"
+    if run_async(get_token()): return "<h1 style='color:lightgreen;text-align:center;padding-top:100px;'>✅ Başarıyla Yetkilendirildi!</h1>"
+    return "<h1 style='color:red;text-align:center;padding-top:100px;'>❌ Yetkilendirme Başarısız!</h1>"
 
 def run_web():
     web_app.run(host='0.0.0.0', port=WEB_PORT)
 # =========================================================
 
-# ==================== TICKET VE MENÜLER ====================
+# ==================== TICKET VE MENÜLER (HATA DÜZELTİLDİ) ====================
 class TicketSelectMenu(discord.ui.Select):
     def __init__(self):
         options = [discord.SelectOption(label="Support", emoji="🎧", value="Support"), discord.SelectOption(label="General", emoji="💬", value="General")]
-        super().__init__(placeholder="Select a category...", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="Select a category...", min_values=1, max_values=1, options=options, custom_id="ticket_menu_select") # Hata buradaydı, custom_id eklendi.
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         await create_ticket(interaction, self.values[0])
@@ -317,7 +316,7 @@ async def join_cmd(interaction: discord.Interaction, sunucu_linki: str, adet: in
     tokens_data = await read_github_file(AUTH_FILE)
     current_tokens = [t.strip() for t in tokens_data[0] if t.strip()]
     
-    if not current_tokens: return await interaction.followup.send("❌ Kimse yetki vermemiş!")
+    if not current_tokens: return await interaction.followup.send("❌ Kimse yetki vermemiş! `/dm` komutuyla davet at.")
 
     selected_tokens = random.sample(current_tokens, min(adet, len(current_tokens)))
     msg = await interaction.followup.send(f"⏳ **{sunucu_linki}** için {len(selected_tokens)} hesap sokuluyor...")
