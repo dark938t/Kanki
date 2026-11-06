@@ -65,6 +65,7 @@ class TwitchFollower:
         self.lock = asyncio.Lock()
         self.running = False
         self.proxies = self._load_proxies()
+        self.proxy_index = 0
 
     def _log(self, message):
         self.log_callback(message)
@@ -105,46 +106,65 @@ class TwitchFollower:
             self._log(f"ID Hatası: {e}")
         return False
 
-    # HATA YAKALAMA EKLENDİ
     async def _execute_follow_request(self, target_id, token, target_username):
-        try:
-            headers = {
-                "Accept": "application/json",
-                "Authorization": f"OAuth {token}",
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-            payload = json.dumps([{
-                "operationName": "FollowUserMutation",
-                "variables": {"targetId": str(target_id), "disableNotifications": False},
-                "extensions": {"persistedQuery": {"version": 1, "sha256Hash": "cd112d9483ede85fa0da514a5657141c24396efbc7bac0ea3623e839206573b8"}}
-            }])
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"OAuth {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        payload = json.dumps([{
+            "operationName": "FollowUserMutation",
+            "variables": {"targetId": str(target_id), "disableNotifications": False},
+            "extensions": {"persistedQuery": {"version": 1, "sha256Hash": "cd112d9483ede85fa0da514a5657141c24396efbc7bac0ea3623e839206573b8"}}
+        }])
 
-            proxy_url = random.choice(self.proxies) if self.proxies else None
-            connector = aiohttp.TCPConnector(ssl=False)
-            timeout = aiohttp.ClientTimeout(total=20)
-            
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                async with session.post("https://gql.twitch.tv/gql", data=payload, headers=headers, proxy=proxy_url) as response:
-                    result_text = await response.text()
-                    
-                    # Twitch'ten ne cevap geldiyse kaydet
-                    if response.status in (200, 204):
-                        if "errors" not in result_text.lower():
-                            return True, "Başarılı"
-                        else:
-                            try:
-                                err_json = json.loads(result_text)
-                                err_msg = err_json[0]["errors"][0]["message"]
-                                return False, err_msg
-                            except:
-                                return False, "Bilinmeyen API Hatası"
-                    else:
-                        return False, f"HTTP {response.status}: {result_text[:50]}"
+        # Proxy patlarsa diğerine geçmesi için döngü
+        max_proxy_retries = len(self.proxies) if self.proxies else 1
+        
+        for attempt in range(max_proxy_retries):
+            if self.proxies:
+                # Sıradaki proxy'i al
+                proxy_url = self.proxies[self.proxy_index % len(self.proxies)]
+                self.proxy_index += 1
+            else:
+                proxy_url = None
+
+            try:
+                connector = aiohttp.TCPConnector(ssl=False)
+                timeout = aiohttp.ClientTimeout(total=15)
+                
+                async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                    async with session.post("https://gql.twitch.tv/gql", data=payload, headers=headers, proxy=proxy_url) as response:
+                        result_text = await response.text()
                         
-        except Exception as e:
-            # Proxy'nin ölü olup olmadığını anlarız
-            return False, str(e)
+                        # Eğer istek başarılıysa
+                        if response.status in (200, 204):
+                            if "errors" not in result_text.lower():
+                                return True, "Başarılı"
+                            else:
+                                try:
+                                    err_json = json.loads(result_text)
+                                    err_msg = err_json[0]["errors"][0]["message"]
+                                    if "Invalid OAuth" in err_msg:
+                                        return False, err_msg
+                                except:
+                                    pass
+                                
+                        # Eğer 400, 405, 403 gibi bir hata alırsak proxy patlaktır
+                        self._log(f"Ölü Proxy tespit edildi ({response.status}): {proxy_url}")
+                        if proxy_url in self.proxies:
+                            self.proxies.remove(proxy_url) # Listeden çıkar
+                            
+            except Exception as e:
+                # Bağlantı hatası vs. (Timeout vb.)
+                self._log(f"Proxy bağlantı hatası: {proxy_url}")
+                if proxy_url in self.proxies:
+                    self.proxies.remove(proxy_url)
+            
+            await asyncio.sleep(0.5) # Bir sonraki proxy ile denemeden önce bekle
+
+        return False, "Tüm proxyler denendi ve başarısız oldu."
 
     async def execute_follows_async(self, target_id, follow_count, tokens_data, target_username, log_fn):
         self.running = True
@@ -161,9 +181,9 @@ class TwitchFollower:
                 success += 1
             else:
                 failed += 1
-                last_error = msg # Son hatayı kaydet
+                last_error = msg
             
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            await asyncio.sleep(random.uniform(0.5, 1.0))
 
         self.running = False
         return success, failed, last_error
@@ -243,8 +263,7 @@ async def tfollow(interaction: discord.Interaction, twitch_ismi: str, adet: int 
 
     success, failed, last_error = await follower.execute_follows_async(target_id, adet, current_tokens, twitch_ismi, log_fn)
     
-    # Hata mesajını Discord'a gönder
-    error_display = f"\n\n⚠️ **Son Hata Sebebi:** `{last_error}`" if failed > 0 else ""
+    error_display = f"\n\n⚠️ **Son Hata:** `{last_error}`" if failed > 0 else ""
     
     await msg.edit(content=f"✅ İşlem tamamlandı!\n🎯 Hedef: **{twitch_ismi}**\n\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{failed}**{error_display}")
 
