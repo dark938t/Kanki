@@ -287,42 +287,48 @@ async def create_ticket(interaction: discord.Interaction, category: str):
         await interaction.followup.send(f"✅ Created: {channel.mention}", ephemeral=True)
     except Exception as e: await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
-# ==================== SLASH KOMUTLARI ====================
 @bot.tree.command(name="ticket", description="Open a ticket")
 async def ticket_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=discord.Embed(title="🎟️ Support", description="Select category."), view=TicketMenuView())
 
-@bot.tree.command(name="join", description="Yetki veren hesapları sunucuya sokar")
-@app_commands.describe(sunucu="Sunucu davet linki (örn: https://discord.gg/xxx)", kac_adam="Kaç adam çekilecek")
-async def join_cmd(interaction: discord.Interaction, sunucu: str, kac_adam: int = 10):
-    if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
+# --- YENİ /JOIN KOMUTU (ID İLE) ---
+@bot.tree.command(name="join", description="İzin veren hesapları Sunucu ID'si ile sunucuya sokar")
+@app_commands.describe(sunucu_id="Sunucunun ID'si (Sağ tık -> ID Kopyala)", kac_adam="Kaç adam çekilecek")
+async def join_cmd(interaction: discord.Interaction, sunucu_id: str, kac_adam: int = 10):
+    if interaction.user.id != OWNER_ID: 
+        return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
+        
     await interaction.response.defer()
-    invite_code = sunucu.split("/")[-1]
+    
+    guild_id = sunucu_id.strip()
     tokens_data = await read_github_file(AUTH_FILE)
     current_tokens = [t.strip() for t in tokens_data[0] if t.strip()]
-    if not current_tokens: return await interaction.followup.send("❌ Kimse yetki vermemiş!")
+    
+    if not current_tokens: 
+        return await interaction.followup.send("❌ Kimse izin vermemiş!")
+
     selected_tokens = random.sample(current_tokens, min(kac_adam, len(current_tokens)))
-    msg = await interaction.followup.send(f"⏳ **{sunucu}** için {len(selected_tokens)} hesap sokuluyor...")
-    success, fail = 0, 0
+    msg = await interaction.followup.send(f"⏳ **{guild_id}** ID'li sunucuya {len(selected_tokens)} hesap sokuluyor...")
+    
+    success = 0
+    fail = 0
+    
     for token in selected_tokens:
         headers = {"Authorization": f"Bot {TOKEN}", "Content-Type": "application/json"}
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"https://discord.com/api/v10/invites/{invite_code}?with_counts=true", headers=headers) as resp:
-                    if resp.status == 200:
-                        guild_id = (await resp.json())["guild"]["id"]
-                        user_headers = {"Authorization": f"Bearer {token}"}
-                        async with session.get("https://discord.com/api/v10/users/@me", headers=user_headers) as u_resp:
-                            if u_resp.status == 200:
-                                user_id = (await u_resp.json())["id"]
-                                async with session.put(f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}", headers=headers, json={"access_token": token}) as j_resp:
-                                    if j_resp.status in [200, 201, 204]: success += 1
-                                    else: fail += 1
+                user_headers = {"Authorization": f"Bearer {token}"}
+                async with session.get("https://discord.com/api/v10/users/@me", headers=user_headers) as u_resp:
+                    if u_resp.status == 200:
+                        user_id = (await u_resp.json())["id"]
+                        async with session.put(f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}", headers=headers, json={"access_token": token}) as j_resp:
+                            if j_resp.status in [200, 201, 204]: success += 1
                             else: fail += 1
                     else: fail += 1
         except: fail += 1
         await asyncio.sleep(1.5)
-    await msg.edit(content=f"✅ Bitti!\nHedef: **{sunucu}**\n\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{fail}**")
+
+    await msg.edit(content=f"✅ Bitti!\nHedef Sunucu ID: **{guild_id}**\n\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{fail}**")
 
 @bot.tree.command(name="generate", description="Hesap üretir")
 @app_commands.choices(
