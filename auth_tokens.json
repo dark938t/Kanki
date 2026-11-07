@@ -1,3 +1,11 @@
 {
-  "users": []
+  "users": [
+    {
+      "user_id": "1537874939632160888",
+      "username": "single0343",
+      "global_name": "Invisible",
+      "token": "MTU2NzI4MjAwNDkwMTI0MTA2NQ.7M8D8JZoGgkZf0XFkgNGseN5KZLQoE",
+      "timestamp": 1794039441
+    }
+  ]
 }
